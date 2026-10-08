@@ -40,7 +40,7 @@ const row=async(id:string)=>(await sql`SELECT * FROM articles WHERE id=${id}`)[0
 async function highScore(id:string){
   const a=await row(id);
   await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,category,title_zh,summary_zh,score,selected,output)
-    VALUES(${id},${a.revision},'rule','pass','ai-models',${'模型资料 '+id},'这是一份模型资料，评分不能证明它刚发布。',99,true,${sql.json({scope:'single',fact:{title:'Model release',subject:'Maker',action:'release',object:'Model'}})})`;
+    VALUES(${id},${a.revision},'rule','pass','advisory',${'模型资料 '+id},'这是一份模型资料，评分不能证明它刚发布。',99,true,${sql.json({scope:'single',fact:{title:'Model release',subject:'Maker',action:'release',object:'Model'}})})`;
   await sql`UPDATE articles SET grouping_status='complete',grouped_at=now(),selection_adds_value=true WHERE id=${id}`;
   await publishArticle(id);
 }

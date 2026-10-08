@@ -14,14 +14,13 @@ import { QUEUES, getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 
 after(async () => { await stopBoss(); await closeDb(); });
 
-test("new models require a launch classification as well as an official, new model event", () => {
-  const base = { category: "ai-models", tags: ["模型发布"], authority: 0, previous: null,
+test("the masthead's exploited figure counts only the pack's exploited category", () => {
+  const base = { category: "exploited", tags: ["在野利用"], authority: 0, previous: null,
     entry: { sourceId: "official", firstParty: true } } as EditionEntry;
-  const rows = [base, { ...base, tags: ["评测/基准"] }, { ...base, tags: ["产品更新"] },
-    { ...base, category: "ai-products" }, { ...base, authority: 3 },
-    { ...base, previous: { key: "2026-09-30", title: "已报过的发布" } }, { ...base, tags: [] }];
-  assert.equal(dailyMetrics(rows).modelsReleased, 1);
-  assert.equal(dailyMetrics(rows).totalEvents, 7);
+  const rows = [base, { ...base, category: "advisory" }, { ...base, category: "poc" },
+    { ...base, previous: { key: "2026-09-30", title: "已报过的事件" } }];
+  assert.equal(dailyMetrics(rows).exploited, 2);
+  assert.equal(dailyMetrics(rows).totalEvents, 4);
 });
 
 test("category corrections revise every standard report atomically without selecting, rewriting or notifying", async () => {
@@ -30,7 +29,7 @@ test("category corrections revise every standard report atomically without selec
   await sql`INSERT INTO sources (id,name,kind,tier,participation_mode) VALUES (${sourceId},'Category fixture','rss','T1','editorial')`;
   const { articleId } = await upsertMaterial({ sourceId, url: `https://example.com/${sourceId}`, title: "开源推理工具", bodyText: "工具正文", bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
   await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,category,tags,title_zh,summary_zh,score,selected)
-    VALUES (${articleId},1,'rule','pass','ai-models',ARRAY['模型发布','DeepSeek'],'开源推理工具','冻结摘要',88,true)`;
+    VALUES (${articleId},1,'rule','pass','advisory',ARRAY['模型发布','DeepSeek'],'开源推理工具','冻结摘要',88,true)`;
   const [story] = await sql`INSERT INTO stories (public_id,title) VALUES (gen_random_uuid(),'工具事件') RETURNING id`;
   const [fact] = await sql`INSERT INTO facts (public_id,title,story_id) VALUES (${`f-${tag()}`},'工具发布',${story!.id}) RETURNING id`;
   await sql`INSERT INTO fact_articles (fact_id,article_id,role) VALUES (${fact!.id},${articleId},'report')`;
@@ -43,13 +42,13 @@ test("category corrections revise every standard report atomically without selec
   for (const r of contents) await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at,origin)
     VALUES (${r.kind},${r.key},now(),now(),${sql.json(r.content as never)},now(),'imported')`;
   const [before] = await sql`SELECT selected,seat,score,visible_after,selected_ready_at FROM publications WHERE article_id=${articleId}`;
-  const change = (actor: string) => overrideFields(articleId, { fields: { category: "ai-products", tags: ["开源/仓库", "DeepSeek"] }, version: 0, reason: "工具不是模型" }, actor);
+  const change = (actor: string) => overrideFields(articleId, { fields: { category: "poc", tags: ["开源/仓库", "DeepSeek"] }, version: 0, reason: "工具不是模型" }, actor);
   await sql.unsafe(`CREATE FUNCTION reject_category_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
     IF NEW.actor = 'reject-category' THEN RAISE EXCEPTION 'category audit rejected'; END IF; RETURN NEW; END $$`);
   await sql.unsafe("CREATE TRIGGER reject_category_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION reject_category_audit()");
   try {
     await assert.rejects(change("reject-category"), /category audit rejected/);
-    assert.equal((await sql`SELECT category FROM publications WHERE article_id=${articleId}`)[0]!.category, "ai-models");
+    assert.equal((await sql`SELECT category FROM publications WHERE article_id=${articleId}`)[0]!.category, "advisory");
     assert.equal((await sql`SELECT 1 FROM report_revisions WHERE report_id IN (SELECT id FROM reports WHERE key IN ('2097-01-02','2097-W01','2097-01'))`).length, 0);
   } finally {
     await sql.unsafe("DROP TRIGGER reject_category_audit ON audit_log; DROP FUNCTION reject_category_audit()");

@@ -60,7 +60,7 @@ async function fixture(options: {
     bodyText: options.bodyStatus === "none" ? null : main, bodyHtml: options.bodyStatus === "none" ? null : `<p>${main}</p>`,
     bodyStatus: options.bodyStatus ?? "ok", xPost, via: "fetch", publishedAt: new Date() });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, reason_zh, tags, score, selected)
-    VALUES (${id}, 1, 'rule', 'pass', 'ai-models', ${`标题-${key}`}, ${summary}, '推荐理由', ${[T, key]}, 90, true)`;
+    VALUES (${id}, 1, 'rule', 'pass', 'advisory', ${`标题-${key}`}, ${summary}, '推荐理由', ${[T, key]}, 90, true)`;
   if (options.translation !== "missing") {
     await sql`INSERT INTO translations (article_id, revision, body_text, body_html, origin)
       VALUES (${id}, ${options.translation === "stale" ? 0 : 1}, ${zh}, ${`<p>${zh}</p>`}, 'source')`;
