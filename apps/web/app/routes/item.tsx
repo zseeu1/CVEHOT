@@ -229,7 +229,7 @@ export default function ItemPage() {
           <p className="text-[13.5px] leading-[1.8] text-ink-2">{item.reason}</p>
         </RailSection>
       ) : (
-        verdict && <RailSection title="AI 评分">{verdict}</RailSection>
+        verdict && <RailSection title="模型评分">{verdict}</RailSection>
       )}
       {item.tags.length > 0 && (
         <RailSection title="标签">
