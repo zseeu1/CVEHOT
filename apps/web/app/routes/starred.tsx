@@ -1,15 +1,22 @@
-import { SITE } from "@aihot/industry/site";
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router";
+import type { ItemAvailability } from "@aihot/contracts/site";
+import { SITE } from "@aihot/site";
 import { Presence } from "../components/ui/Presence";
+import { edgeTtl } from "../lib/api.server";
 import { pageMeta } from "../lib/seo";
 import { exportBundle, importBundle, removeStar, useStarred, type ImportReport } from "../lib/local-state";
-import { fullDateTime, shortSourceName } from "../lib/format";
+import { fullDateTime } from "../lib/format";
 import { IconBookmark, IconDownload, IconClose } from "../components/icons";
+import { readSnapshot, restoreAnchor, useSaveOnLeave } from "../lib/restore";
+import { PhoneBar } from "../components/shell/PhoneBar";
+import type { Screen } from "../components/shell/screens";
+import { webModules } from "../site-modules";
 
-/** Shared caches may keep this page for five minutes. */
+export const handle: Screen = { tab: "me", name: "收藏" };
+
 export function headers() {
-  return { "Cache-Control": "public, max-age=0, s-maxage=300, stale-while-revalidate=600" };
+  return edgeTtl(300);
 }
 
 export function meta() {
@@ -19,16 +26,15 @@ export function meta() {
 function reportText(r: ImportReport): string {
   const parts = [`新增收藏 ${r.starredAdded} 条`, `已读记录 ${r.readAdded} 条`];
   if (r.starredSkipped || r.readSkipped) parts.push(`超出上限或格式不对而跳过 ${r.starredSkipped + r.readSkipped} 条`);
-  if (r.themeApplied) parts.push("已沿用导入的主题");
+  if (r.themeApplied) parts.push("已沿用导入的深浅色设置");
   if (r.readFailed) parts.push("已读记录没能保存（浏览器存储已满或不可用）");
   return parts.join("，");
 }
 
-
 export default function StarredPage() {
   const starred = useStarred();
   const [mounted, setMounted] = useState(false);
-  const [availability, setAvailability] = useState<Record<string, string>>({});
+  const [availability, setAvailability] = useState<Record<string, ItemAvailability>>({});
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => setMounted(true), []);
@@ -37,12 +43,31 @@ export default function StarredPage() {
   useEffect(() => {
     if (!mounted || !starredIds) return;
     const controller = new AbortController();
-    fetch(`/api/site/items/availability?ids=${encodeURIComponent(starredIds)}`, { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((data) => { if (!controller.signal.aborted) setAvailability(data); })
-      .catch(() => {});
+    // Batches of 100: a request line with all 500 ids is longer than the front servers accept.
+    const ids = starredIds.split(",");
+    const batches: string[][] = [];
+    for (let i = 0; i < ids.length; i += 100) batches.push(ids.slice(i, i + 100));
+    Promise.all(
+      batches.map((batch) =>
+        fetch(`/api/site/items/availability?ids=${encodeURIComponent(batch.join(","))}`, { signal: controller.signal })
+          .then((r) => (r.ok ? (r.json() as Promise<Record<string, ItemAvailability>>) : {}))
+          .catch(() => ({})),
+      ),
+    ).then((parts) => {
+      if (!controller.signal.aborted) setAvailability(Object.assign({}, ...parts));
+    });
     return () => controller.abort();
   }, [mounted, starredIds]);
+
+  // Back from an item: the list renders only after mounting (it lives in this browser), so the
+  // position comes back once it is there, by the same card anchor the other lists use.
+  const historyKey = useLocation().key;
+  useLayoutEffect(() => {
+    if (!mounted || starred.length === 0) return;
+    const snap = readSnapshot<null>(historyKey);
+    if (snap) restoreAnchor(snap.anchor, snap.scrollY);
+  }, [mounted, historyKey]);
+  useSaveOnLeave(historyKey, () => null);
 
   const doExport = () => {
     const blob = new Blob([JSON.stringify(exportBundle(), null, 2)], { type: "application/json" });
@@ -63,15 +88,28 @@ export default function StarredPage() {
     }
   };
 
+  // Imports from elsewhere that the site's modules offer.
+  const importFrom = (run: () => Promise<{ ok: boolean; text: string }>) =>
+    run().then(
+      (r) => setNotice({ kind: r.ok ? "ok" : "error", text: r.text }),
+      (err: Error) => setNotice({ kind: "error", text: err.message }),
+    );
+
   const action = "text-[12.5px] text-ink-3 transition-colors hover:text-accent";
   return (
     <div className="pb-12">
-      <header className="flex flex-col gap-2 pb-4 pt-5 sm:flex-row sm:items-start sm:justify-between lg:pt-1">
+      <PhoneBar back={{ to: "/more", label: "我的" }} title="收藏" />
+      <header className="flex flex-col gap-2 pb-4 pt-3 sm:flex-row sm:items-start sm:justify-between lg:pt-1">
         <div>
-          <h1 className="text-[24px] font-semibold leading-[1.3] text-ink">收藏</h1>
-          <p className="mt-1.5 text-[13px] text-ink-3">本机收藏的 {SITE.name} 内容，适合稍后阅读和回看。</p>
+          <h1 data-page-title="" className="text-[24px] font-semibold leading-[1.3] text-ink">收藏</h1>
+          <p className="mt-1.5 text-[13px] text-ink-3">{`本机收藏的 ${SITE.name} 内容，适合稍后阅读和回看。`}</p>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:pt-1.5">
+          {webModules().flatMap((m) => m.starredImports ?? []).map((i) => (
+            <button key={i.label} type="button" onClick={() => importFrom(i.run)} className={action}>
+              {i.label}
+            </button>
+          ))}
           <button type="button" onClick={() => fileRef.current?.click()} className={action}>
             导入文件
           </button>
@@ -106,12 +144,13 @@ export default function StarredPage() {
       ) : (
         <ul className="mt-3 lg:space-y-3">
           {starred.map((s) => {
-            const status = availability[s.id];
+            const current = availability[s.id];
+            const status = current?.status;
             const unavailable = status === "unavailable";
             return (
-              <li key={s.id} className={`relative border-b border-line-soft py-4 lg:card lg:px-[18px] lg:py-[15px] ${unavailable ? "opacity-70" : "lg:card-hover"}`}>
+              <li key={s.id} data-card-key={s.id} className={`relative border-b border-line-soft py-4 lg:card lg:px-[18px] lg:py-[15px] ${unavailable ? "opacity-70" : "lg:card-hover"}`}>
                 <div className="flex items-center gap-2 text-[12.5px] text-ink-4">
-                  <span className="min-w-0 truncate text-ink-3">{shortSourceName(s.sourceName)}</span>
+                  <span className="min-w-0 truncate text-ink-3">{current?.sourceName ?? s.sourceName}</span>
                   {s.publishedAt && <span className="num shrink-0">· {fullDateTime(s.publishedAt)}</span>}
                   <span className="ml-auto hidden shrink-0 sm:inline">
                     收藏于 <span className="num">{fullDateTime(s.savedAt)}</span>
@@ -124,7 +163,7 @@ export default function StarredPage() {
                   {unavailable ? (
                     s.title
                   ) : (
-                    <Link to={`/items/${s.id}`} className="transition-colors after:absolute after:inset-0 after:content-[''] hover:text-accent">
+                    <Link viewTransition to={`/items/${s.id}`} className="transition-colors after:absolute after:inset-0 after:content-[''] hover:text-accent">
                       {s.title}
                     </Link>
                   )}

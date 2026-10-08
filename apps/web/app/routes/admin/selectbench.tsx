@@ -1,28 +1,17 @@
-import { SITE } from "@aihot/industry/site";
+import { SITE } from "@aihot/site";
 import { useRef } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/selectbench";
+import type { AdminSelectBenchRuns } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj, num, pct } from "../../features/admin/format";
 import { AdminPage, Badge, Button, Card, Empty } from "../../features/admin/ui";
 import { toast } from "../../features/admin/toast";
 
-interface RunRow {
-  id: string;
-  label: string;
-  split: string | null;
-  sample_size: number;
-  prompt_version: string | null;
-  models: string[];
-  summary: Record<string, Record<string, number>>;
-  created_at: string;
-  imported_by: string | null;
-  cases: number;
-}
 
 export async function loader({ request }: Route.LoaderArgs) {
-  return adminGet<{ runs: RunRow[] }>(request, "/api/admin/selectbench");
+  return adminGet<AdminSelectBenchRuns>(request, "/api/admin/selectbench");
 }
 
 export const meta: Route.MetaFunction = () => [{ title: `SelectBench · ${SITE.name} 后台` }];
@@ -69,10 +58,10 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
                 pad={false}
               >
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] text-[13px]">
+                  <table className="w-full min-w-[900px] text-[13px]">
                     <thead>
                       <tr className="border-b border-line text-left text-[12px] text-ink-3">
-                        {["模型", "准确率", "精确率", "召回率", "F1", "入选比例", "金标入选", "失败", "平均耗时", "输入/输出 tokens"].map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}
+                        {["模型", "有效输出准确率", "覆盖率", "完整准确率", "精确率", "召回率", "F1", "入选比例", "金标入选", "失败", "平均耗时", "输入/输出 tokens"].map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}
                       </tr>
                     </thead>
                     <tbody>
@@ -80,8 +69,10 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
                         const s = r.summary[m] ?? {};
                         return (
                           <tr key={m} className="border-b border-line/70 last:border-0">
-                            <td className="px-3 py-2 font-medium text-ink">{m} {m === best && r.models.length > 1 && <Badge tone="accent">F1 最高</Badge>}</td>
+                            <td className="px-3 py-2 font-medium text-ink">{m} {m === best && r.models.length > 1 && <Badge tone="accent">有效输出 F1 最高</Badge>}</td>
                             <td className="num px-3 py-2">{pct(s.accuracy)}</td>
+                            <td className="num px-3 py-2">{pct(s.coverage)}</td>
+                            <td className="num px-3 py-2 font-semibold text-ink">{pct(s.completeAccuracy)}</td>
                             <td className="num px-3 py-2">{pct(s.precision)}</td>
                             <td className="num px-3 py-2">{pct(s.recall)}</td>
                             <td className="num px-3 py-2 font-semibold text-ink">{pct(s.f1)}</td>
@@ -97,7 +88,7 @@ export default function SelectBench({ loaderData }: Route.ComponentProps) {
                   </table>
                 </div>
                 <div className="flex items-center justify-between border-t border-line px-4 py-2 text-[12.5px] text-ink-3">
-                  <span>{r.cases ? `${num(r.cases)} 条逐条结果` : "只有汇总（旧格式报告）"}</span>
+                  <span>{r.cases ? `${num(r.cases)} 条逐条结果` : "只有汇总"}</span>
                   {r.cases > 0 && <Link className="text-accent" to={`/admin/selectbench/${r.id}`}>逐条浏览</Link>}
                 </div>
               </Card>

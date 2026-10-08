@@ -1,5 +1,5 @@
-// X accounts via SocialData search ("from:handle -filter:replies", newest first). Plain account queries
-// are read together, about two dozen accounts per search (planXShards); SocialData bills per request.
+// X accounts via SocialData search, newest first. Verified publishers include their own thread
+// continuations; other replies stay excluded. Plain accounts share length-bounded search shards.
 import { searchTweets, tweetMedia, tweetText, type SdArticle, type SdTweet } from "../providers/socialdata.ts";
 import { ProviderRejectedError } from "../providers/receipts.ts";
 import type { XPostData } from "../content/materials.ts";
@@ -92,6 +92,8 @@ export interface XBacklog {
 
 export interface XRead {
   tweets: SdTweet[];
+  /** Paid search pages whose business effects must be committed before their receipts complete. */
+  receiptIds: number[];
   lastId: string | null;
   /** Stretches still to read, oldest first (kept in the source cursor). */
   backlog: XBacklog[];
@@ -121,6 +123,7 @@ export async function readXSearch(base: string, opts: { lastId: string | null; b
   const search = (query: string, cursor: string | null) =>
     searchTweets(query, { purpose: "source_fetch", subject: opts.subject, window, type: opts.type ?? "Latest", cursor });
   const all: SdTweet[] = [];
+  const receiptIds = new Set<number>();
   const query = lastId ? `${base} since_id:${lastId}` : base;
   let cursor: string | null = null;
   let pages = 0;
@@ -137,6 +140,7 @@ export async function readXSearch(base: string, opts: { lastId: string | null; b
       break;
     }
     pages += 1;
+    receiptIds.add(res.receiptId);
     all.push(...res.tweets);
     if (!lastId || !res.nextCursor || res.tweets.length === 0) break;
     if (pages >= MAX_PAGES) {
@@ -169,6 +173,7 @@ export async function readXSearch(base: string, opts: { lastId: string | null; b
       break;
     }
     backlogPages += 1;
+    receiptIds.add(res.receiptId);
     all.push(...res.tweets);
     if (!res.nextCursor || res.tweets.length === 0) backlog.shift();
     else stretch.next = res.nextCursor;
@@ -177,12 +182,13 @@ export async function readXSearch(base: string, opts: { lastId: string | null; b
   const seen = new Set<string>();
   const tweets = all.filter((t) => !t.retweeted_status && !seen.has(t.id_str) && !!seen.add(t.id_str));
   const maxId = tweets.reduce<string | null>((m, t) => (m === null || BigInt(t.id_str) > BigInt(m) ? t.id_str : m), lastId);
-  return { tweets, lastId: maxId, backlog, pages, truncated, backlogPages, dropped };
+  return { tweets, receiptIds: [...receiptIds], lastId: maxId, backlog, pages, truncated, backlogPages, dropped };
 }
 
 /** One account's own search (its first fetch, a query of its own, or a manual run from the admin). */
 export async function fetchXSearch(source: SourceRow): Promise<XFetch> {
-  const base = String(source.config.query ?? "");
+  const handle = selfThreadHandle(source);
+  const base = handle ? `from:${handle} (-filter:replies OR filter:self_threads)` : String(source.config.query ?? "");
   if (!base) throw new FetchError("query missing");
   const { tweets, ...read } = await readXSearch(base, {
     lastId: source.cursor?.lastTweetId ?? null,
@@ -193,7 +199,7 @@ export async function fetchXSearch(source: SourceRow): Promise<XFetch> {
   return { candidates: tweets.map(tweetToCandidate), ...read };
 }
 
-// --- Shards: plain account queries read together ------------------------------------------------
+// Shards: plain account queries read together
 
 /** A query that can share a search: exactly "from:handle -filter:replies", newest first. */
 const SHARDABLE = /^from:([A-Za-z0-9_]{1,15}) -filter:replies$/i;
@@ -209,8 +215,16 @@ export function shardHandle(s: Pick<SourceRow, "kind" | "config" | "cursor">): s
   return SHARDABLE.exec(String(s.config.query ?? ""))?.[1] ?? null;
 }
 
-export function shardQuery(handles: string[]): string {
-  return `(${handles.map((h) => `from:${h}`).join(" OR ")}) -filter:replies`;
+/** Verified publisher identity permits its own announcement thread, not conversations with others. */
+export function selfThreadHandle(s: Pick<SourceRow, "config">): string | null {
+  if (s.config.publisherRole !== "organization" && s.config.publisherRole !== "person") return null;
+  return SHARDABLE.exec(String(s.config.query ?? ""))?.[1] ?? null;
+}
+
+export function shardQuery(handles: string[], selfThreads: string[] = []): string {
+  const posts = `(${handles.map((h) => `from:${h}`).join(" OR ")}) -filter:replies`;
+  const own = handles.filter((h) => selfThreads.includes(h));
+  return own.length ? `(${posts} OR (${own.map((h) => `from:${h}`).join(" OR ")}) filter:self_threads)` : posts;
 }
 
 export interface XShard {
@@ -225,10 +239,10 @@ export interface XShard {
  * accounts stay together between runs; a source added or removed shifts only the shards after it.
  */
 export function planXShards(sources: Array<Pick<SourceRow, "id" | "kind" | "config" | "cursor" | "participation_mode">>): XShard[] {
-  const byMode = new Map<string, Array<{ id: string; handle: string }>>();
+  const byMode = new Map<string, Array<{ id: string; handle: string; selfThread: boolean }>>();
   for (const s of sources) {
     const handle = shardHandle(s);
-    if (handle) byMode.set(s.participation_mode, [...(byMode.get(s.participation_mode) ?? []), { id: s.id, handle }]);
+    if (handle) byMode.set(s.participation_mode, [...(byMode.get(s.participation_mode) ?? []), { id: s.id, handle, selfThread: !!selfThreadHandle(s) }]);
   }
   const shards: XShard[] = [];
   for (const [mode, list] of [...byMode].sort(([a], [b]) => a.localeCompare(b))) {
@@ -239,7 +253,7 @@ export function planXShards(sources: Array<Pick<SourceRow, "id" | "kind" | "conf
       current = [];
     };
     for (const s of list) {
-      if (current.length >= SHARD_MAX_ACCOUNTS || shardQuery([...current, s].map((c) => c.handle)).length > SHARD_QUERY_MAX) close();
+      if (current.length >= SHARD_MAX_ACCOUNTS || shardQuery([...current, s].map((c) => c.handle), [...current, s].filter((c) => c.selfThread).map((c) => c.handle)).length > SHARD_QUERY_MAX) close();
       current.push(s);
     }
     close();

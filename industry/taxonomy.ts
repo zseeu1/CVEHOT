@@ -79,7 +79,7 @@ export const CATEGORY_BY_ITEM_TYPE: Readonly<Record<string, string>> = {
 // ── 厂商与组件 ──────────────────────────────────────────────────────────────────────────
 
 /** 厂商与组件主题：id → 显示名、卡片上显示的标签（null 表示只用 entity:<id> 归类）、别名。 */
-export const ENTITIES: Record<string, { name: string; displayTag: string | null; aliases: string[] }> = {
+export const ENTITIES: Record<string, { name: string; displayTag: string | null; aliases: string[]; otherNames?: string[] }> = {
   microsoft: { name: "Microsoft", displayTag: "Microsoft", aliases: ["Microsoft", "微软", "Windows", "MSRC", "Exchange", "SharePoint", "Office", "Hyper-V"] },
   google: { name: "Google", displayTag: "Google", aliases: ["Google", "谷歌", "Chrome", "Chromium", "Android"] },
   apple: { name: "Apple", displayTag: "Apple", aliases: ["Apple", "苹果", "macOS", "iOS", "Safari", "WebKit"] },
@@ -142,4 +142,16 @@ export const PUBLISHER_DOMAINS: ReadonlyArray<{ entityId: string; domains: reado
 export const IDENTITY_CONTEXT_ALIASES: ReadonlyArray<{ entityId: string; pattern: RegExp }> = [
   { entityId: "microsoft", pattern: /@MSFTSecurity\b/i },
   { entityId: "github", pattern: /@github\b/i },
+];
+
+/**
+ * 这个行业最受关注的一类进展（AI 行业是新模型）：日报报头的「N 个新模型」按它数。
+ * 漏洞行业没有这种「发布物」，设成 null；报头的「条在野利用」由 reports/compose.ts 的 exploited 指标单独产出。
+ */
+export const RELEASE: { category: string; tag: string; unit: string } | null = null;
+
+/** 周报月报的总述可以直接写、不必在报道里找到出处的行业通用词（小写）。站名会自动算进去。 */
+export const PLAIN_TERMS: readonly string[] = [
+  "cve", "cnvd", "cvss", "kev", "poc", "exp", "0day", "rce", "lfi", "rfi",
+  "xss", "csrf", "ssrf", "sqli", "dos", "ddos", "apt", "edr", "waf", "c2", "ioc", "ttp",
 ];

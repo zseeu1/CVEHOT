@@ -1,26 +1,31 @@
-import { SITE, withSubject } from "@aihot/industry/site";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, redirect, useLoaderData } from "react-router";
+import { IntentLink } from "../components/ui/IntentLink";
+import { Link, useLoaderData, useLocation } from "react-router";
 import type { Route } from "./+types/story";
 import type { StoryDetail, StoryReportView } from "@aihot/contracts/site";
-import { data as routeData } from "react-router";
+import { SITE } from "@aihot/site";
+import { cachedPage, loadOr404 } from "../lib/api.server";
+import { pageReuse } from "../lib/page-reuse";
 import { breadcrumbLd, pageMeta, titled } from "../lib/seo";
-import { beijingDate, beijingTime, monthDayTime, relativeTime, shortSourceName } from "../lib/format";
+import { beijingDate, beijingTime } from "@aihot/contracts/time";
+import { monthDay, monthDayTime, relativeTime } from "../lib/format";
 import { HeatChart } from "../features/story/HeatChart";
+import { sessionCache } from "../lib/session-cache";
+import { isReload } from "../lib/restore";
 import { Badge, SelectedBadge } from "../components/ui/Badge";
 import { PillTabs } from "../components/ui/Tabs";
 import { Select } from "../components/ui/Controls";
 import { IconArrowLeft, IconChevronRight, IconClock, IconDoc, IconUsers } from "../components/icons";
+import { PhoneBar } from "../components/shell/PhoneBar";
+import type { Screen } from "../components/shell/screens";
+
+export const handle: Screen = { home: "hot" };
+export { pageHeaders as headers } from "../lib/api.server";
+export const { clientLoader, shouldRevalidate } = pageReuse<typeof loader>();
 
 export async function loader({ params, request }: Route.LoaderArgs) {
-  const res = await fetch(`${process.env.API_BASE_URL || "http://127.0.0.1:3001"}/api/site/stories/${encodeURIComponent(params.publicId)}`, { redirect: "manual", signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]) });
-  if (res.status === 308) {
-    const target = (await res.json()) as { mergedInto: string };
-    throw redirect(`/story/${target.mergedInto}`, 308);
-  }
-  if (res.status === 404) throw routeData({ message: "not_found" }, { status: 404 });
-  if (!res.ok) throw routeData({ message: "unavailable" }, { status: 503 });
-  return { story: (await res.json()) as StoryDetail };
+  const story = await loadOr404<StoryDetail>(`/api/site/stories/${encodeURIComponent(params.publicId)}`, { signal: request.signal, merged: (id) => `/story/${id}` });
+  return cachedPage(300, { story });
 }
 
 export function meta({ loaderData }: Route.MetaArgs) {
@@ -34,10 +39,6 @@ export function meta({ loaderData }: Route.MetaArgs) {
     type: "article",
     jsonLd: breadcrumbLd([{ name: SITE.name, path: "/" }, { name: "热点榜", path: "/hot" }, { name: s.title, path: `/story/${s.publicId}` }]),
   });
-}
-
-export function headers() {
-  return { "Cache-Control": "public, max-age=0, s-maxage=300, stale-while-revalidate=120" };
 }
 
 const STATUS = {
@@ -55,7 +56,7 @@ const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayout
 /** A main-column card: 17px title, 24px padding. */
 function Panel({ id, title, sub, right, children, className = "" }: { id?: string; title: ReactNode; sub?: ReactNode; right?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section id={id} className={`card scroll-mt-[64px] p-5 lg:p-6 ${className}`}>
+    <section id={id} className={`card scroll-mt-[calc(var(--bar-h)+64px)] p-5 lg:p-6 ${className}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-[17px] font-[650] leading-[1.5] text-ink">{title}</h2>
@@ -106,11 +107,6 @@ function useActiveSection(keys: SectionKey[]): [SectionKey, (k: SectionKey) => v
   return [active, go];
 }
 
-function dayLabelOf(day: string): string {
-  const [, m, d] = day.split("-").map(Number) as [number, number, number];
-  return `${m}月${d}日`;
-}
-
 /** One report on the story timeline: time, source and marks, title, a summary that opens on demand. */
 function TimelineRow({ r }: { r: StoryReportView }) {
   const [open, setOpen] = useState(false);
@@ -127,12 +123,12 @@ function TimelineRow({ r }: { r: StoryReportView }) {
       </time>
       <div className="min-w-0">
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12px] leading-[20px] text-ink-4 lg:mt-0">
-          <span className="min-w-0 truncate">{r.source.name.replace(/（RSS）|（网页）|（API）/g, "")}</span>
+          <span className="min-w-0 truncate">{r.source.name}</span>
           {r.selected && <SelectedBadge />}
         </div>
-        <Link to={`/items/${r.id}`} prefetch="intent" className="mt-1 block text-[16px] font-[650] leading-[1.6] text-ink transition-colors hover:text-accent lg:text-[15.5px]">
+        <IntentLink viewTransition to={`/items/${r.id}`} className="mt-1 block text-[16px] font-[650] leading-[1.6] text-ink transition-colors hover:text-accent lg:text-[15.5px]">
           {r.title}
-        </Link>
+        </IntentLink>
         {r.summary && (
           <>
             <p ref={ref} className={`mt-1 text-[14px] leading-[1.75] text-ink-3 ${open ? "" : "line-clamp-2"}`}>
@@ -151,11 +147,28 @@ function TimelineRow({ r }: { r: StoryReportView }) {
 }
 
 type Filter = "all" | "official" | "selected";
+type Order = "desc" | "asc";
+
+// The report filter and shared reading order, per history entry: back from a report restores the view.
+const viewCache = sessionCache<{ savedAt: number; filter: Filter; order: Order }>("aihot:story-view:", 30 * 60 * 1000);
 
 export default function StoryPage() {
   const { story } = useLoaderData<typeof loader>();
-  const [filter, setFilter] = useState<Filter>("all");
-  const [order, setOrder] = useState<"desc" | "asc">("desc");
+  const entry = useLocation().key;
+  const [filter, setFilter] = useState<Filter>(() => viewCache.peek(entry)?.filter ?? "all");
+  const [order, setOrder] = useState<Order>(() => viewCache.peek(entry)?.order ?? "desc");
+  // A document the browser reloaded on back/forward gets the view back after hydration.
+  useEffect(() => {
+    if (viewCache.peek(entry) || isReload()) return;
+    const saved = viewCache.read(entry);
+    if (saved) {
+      setFilter(saved.filter);
+      setOrder(saved.order);
+    }
+  }, [entry]);
+  useEffect(() => {
+    if (filter !== "all" || order !== "desc" || viewCache.peek(entry)) viewCache.set(entry, { savedAt: Date.now(), filter, order });
+  }, [entry, filter, order]);
   const status = STATUS[story.status];
   // A settled story nobody watched (history pages) has no heat to explain or chart.
   const observed = story.status !== "settled" || story.heat.length > 0 || story.whyHot.participants48h > 0 || story.whyHot.rank !== null;
@@ -178,7 +191,10 @@ export default function StoryPage() {
     }
     return out;
   }, [story.timeline, filter, order]);
-  const newest = story.timeline.reduce<StoryReportView | null>((a, b) => (!a || Date.parse(b.publishedAt) > Date.parse(a.publishedAt) ? b : a), null);
+  const developments = useMemo(() => [...story.developments].sort((a, b) =>
+    order === "desc" ? Date.parse(b.firstReportAt) - Date.parse(a.firstReportAt) : Date.parse(a.firstReportAt) - Date.parse(b.firstReportAt)
+  ), [story.developments, order]);
+  const newest = story.latestReport;
   const overview = story.digest
     ? { label: "AI 综述", text: story.digest, note: story.digestUpdatedAt ? `AI 根据报道生成 · ${relativeTime(story.digestUpdatedAt)}更新` : "AI 根据报道生成" }
     : story.summary
@@ -193,7 +209,8 @@ export default function StoryPage() {
 
   return (
     <div className="mx-auto max-w-[var(--page-max-reading)] pb-10">
-      <nav aria-label="位置" className="flex items-center gap-2.5 pb-4 pt-5 text-[12px] text-ink-4 lg:pb-5 lg:pt-4">
+      <PhoneBar back={{ to: "/hot", label: "热点" }} title={story.title} />
+      <nav aria-label="位置" className="hidden items-center gap-2.5 pb-5 pt-4 text-[12px] text-ink-4 lg:flex">
         <Link to="/hot" className="inline-flex items-center gap-1.5 transition-colors hover:text-ink">
           <IconArrowLeft size={15} /> 热点榜
         </Link>
@@ -201,12 +218,12 @@ export default function StoryPage() {
         <span>事件详情</span>
       </nav>
 
-      <header className="max-w-[960px]">
+      <header className="max-w-[960px] pt-3 lg:pt-0">
         <div className="flex items-center gap-2 text-[12px] text-ink-4">
           热点事件
           <Badge tone={status.tone}>{status.label}</Badge>
         </div>
-        <h1 className="mt-2.5 text-[27px] font-bold leading-[1.5] tracking-[-0.01em] text-ink lg:mt-3 lg:text-[36px] lg:font-[730]">{story.title}</h1>
+        <h1 data-page-title="" className="mt-2.5 text-[27px] font-bold leading-[1.5] tracking-[-0.01em] text-ink lg:mt-3 lg:text-[36px] lg:font-[730]">{story.title}</h1>
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[12.5px] text-ink-3">
           <span className="inline-flex items-center gap-1.5">
             <IconDoc size={15} className="text-ink-4" />
@@ -225,7 +242,7 @@ export default function StoryPage() {
         </div>
       </header>
 
-      <div className="sticky top-0 z-20 -mx-4 mt-5 bg-bg/90 px-4 py-2 backdrop-blur-md lg:mx-0 lg:px-0">
+      <div className="bleed sticky top-[var(--bar-h)] z-20 mt-5 bg-bg/90 py-2 backdrop-blur-md lg:mx-0 lg:px-0">
         <PillTabs
           size="sm"
           layoutId="story-sections"
@@ -263,7 +280,7 @@ export default function StoryPage() {
                   {story.latestAt && <span className="num text-ink-4">{monthDayTime(story.latestAt)}</span>}
                 </div>
                 {newest ? (
-                  <Link to={`/items/${newest.id}`} className="group mt-1.5 inline text-[14px] leading-[1.7] text-ink-2 transition-colors hover:text-accent">
+                  <Link viewTransition to={`/items/${newest.id}`} className="group mt-1.5 inline text-[14px] leading-[1.7] text-ink-2 transition-colors hover:text-accent">
                     {story.latest}
                     <IconChevronRight size={14} className="ml-0.5 inline -translate-y-px text-ink-4 transition-transform group-hover:translate-x-0.5" />
                   </Link>
@@ -275,19 +292,24 @@ export default function StoryPage() {
           </Panel>
 
           {story.developments.length > 1 && (
-            <Panel title="事件进展" right={`${story.developments.length} 个进展`} className="order-3">
+            <Panel title="事件进展" sub={`${story.developments.length} 个进展`} className="order-3" right={
+              <Select value={order} onChange={(e) => setOrder(e.target.value as "desc" | "asc")} aria-label="事件进展排序">
+                <option value="desc">最新在前</option>
+                <option value="asc">最早在前</option>
+              </Select>
+            }>
               <ol className="relative space-y-4 pl-5 before:absolute before:bottom-2 before:left-[3px] before:top-2 before:w-px before:bg-line">
-                {story.developments.map((d, i) => (
+                {developments.map((d) => (
                   <li key={d.factId} className="relative">
-                    <span className={`absolute -left-5 top-[7px] size-[7px] rounded-full ring-4 ring-surface ${i === 0 ? "bg-accent" : "bg-line-strong"}`} aria-hidden="true" />
+                    <span className={`absolute -left-5 top-[7px] size-[7px] rounded-full ring-4 ring-surface ${d.factId === story.developments[0]?.factId ? "bg-accent" : "bg-line-strong"}`} aria-hidden="true" />
                     <div className="num text-[12px] text-ink-4">
                       {monthDayTime(d.firstReportAt)} · {d.reportCount} 篇报道
                     </div>
-                    <Link to={`/items/${d.representative.id}`} className="mt-0.5 block text-[15px] font-semibold leading-snug text-ink transition-colors hover:text-accent">
+                    <Link viewTransition to={`/items/${d.representative.id}`} className="mt-0.5 block text-[15px] font-semibold leading-snug text-ink transition-colors hover:text-accent">
                       {d.title}
                     </Link>
                     <div className="mt-0.5 truncate text-[12.5px] text-ink-4">
-                      {shortSourceName(d.representative.source.name)}：{d.representative.title}
+                      {d.representative.source.name}：{d.representative.title}
                     </div>
                   </li>
                 ))}
@@ -301,7 +323,7 @@ export default function StoryPage() {
             sub="沿着报道，了解事件的不同侧面。"
             className="order-4"
             right={
-              <Select value={order} onChange={(e) => setOrder(e.target.value as "desc" | "asc")} aria-label="排序">
+              <Select value={order} onChange={(e) => setOrder(e.target.value as "desc" | "asc")} aria-label="报道时间线排序">
                 <option value="desc">最新在前</option>
                 <option value="asc">最早在前</option>
               </Select>
@@ -324,7 +346,7 @@ export default function StoryPage() {
             ) : (
               days.map(({ day, rows }) => (
                 <div key={day}>
-                  <div className="pb-0.5 pt-5 text-[14px] font-semibold text-ink">{dayLabelOf(day)}</div>
+                  <div className="pb-0.5 pt-5 text-[14px] font-semibold text-ink">{monthDay(day)}</div>
                   <ol>
                     {rows.map((r) => (
                       <TimelineRow key={r.id} r={r} />
@@ -351,7 +373,7 @@ export default function StoryPage() {
               <ul className="-my-1 divide-y divide-line-soft">
                 {story.related.map((r) => (
                   <li key={r.publicId}>
-                    <Link to={`/story/${r.publicId}`} className="group flex items-baseline gap-3 py-3">
+                    <Link viewTransition to={`/story/${r.publicId}`} className="group flex items-baseline gap-3 py-3">
                       <span className="shrink-0 text-[12px] text-ink-4">{r.relation === "storyline" ? "同一故事线" : "相关事件"}</span>
                       <span className="min-w-0 flex-1 text-[14.5px] font-medium text-ink-2 transition-colors group-hover:text-accent">{r.title}</span>
                       <IconChevronRight size={14} className="shrink-0 self-center text-ink-4" />
@@ -391,7 +413,7 @@ export default function StoryPage() {
                 {story.officialReports.slice(0, 5).map((r) => (
                   <li key={r.id} className="py-3">
                     <div className="truncate text-[11.5px] text-ink-4">{r.source.name}</div>
-                    <Link to={`/items/${r.id}`} className="group mt-1 block text-[13.5px] font-semibold leading-[1.6] text-ink transition-colors hover:text-accent">
+                    <Link viewTransition to={`/items/${r.id}`} className="group mt-1 block text-[13.5px] font-semibold leading-[1.6] text-ink transition-colors hover:text-accent">
                       {r.title}
                       <IconChevronRight size={13} className="ml-0.5 inline -translate-y-px text-ink-4 transition-transform group-hover:translate-x-0.5" />
                     </Link>
@@ -403,6 +425,17 @@ export default function StoryPage() {
                   在时间线筛选全部官方报道
                 </button>
               )}
+            </RailCard>
+          )}
+          {story.topics.length > 0 && (
+            <RailCard title="相关主题">
+              <div className="flex flex-wrap gap-1.5">
+                {story.topics.map((t) => (
+                  <Link viewTransition key={t.slug} to={`/topics/${t.slug}`} className="chip">
+                    {t.name}
+                  </Link>
+                ))}
+              </div>
             </RailCard>
           )}
           <RailCard title="事件记录" className="hidden lg:block">

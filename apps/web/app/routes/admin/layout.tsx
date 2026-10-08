@@ -1,18 +1,17 @@
-import { FEATURES } from "@aihot/industry/features";
-import { SITE } from "@aihot/industry/site";
 import { motion } from "motion/react";
+import { SITE } from "@aihot/site";
 import { NavLink, Outlet, useLocation, useNavigation, type ShouldRevalidateFunction } from "react-router";
 import type { Route } from "./+types/layout";
-import { RingMark } from "../../components/Logo";
+import { RingMark } from "@aihot/site/brand/Logo.tsx";
 import { NavigationProgress } from "../../components/shell/Chrome";
-import type { AdminMe } from "../../features/admin/action";
+import type { AdminMe, AdminNavCounts } from "@aihot/contracts/admin";
 import { Toaster } from "../../features/admin/toast";
 import { adminGet } from "../../lib/admin.server";
-
-type Counts = Partial<Record<"feedback" | "sources" | "runs" | "monitor", number>>;
+import type { AdminNavEntry } from "../../modules";
+import { webModules } from "../../site-modules";
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const [me, counts] = await Promise.all([adminGet<AdminMe>(request, "/api/admin/me"), adminGet<Counts>(request, "/api/admin/nav-counts").catch(() => ({}) as Counts)]);
+  const [me, counts] = await Promise.all([adminGet<AdminMe>(request, "/api/admin/me"), adminGet<AdminNavCounts>(request, "/api/admin/nav-counts").catch((): AdminNavCounts => ({}))]);
   return { me, counts };
 }
 
@@ -23,13 +22,15 @@ export const meta: Route.MetaFunction = () => [{ title: `${SITE.name} 后台` },
 
 export const headers: Route.HeadersFunction = () => ({ "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
 
-const NAV: Array<{ group: string; items: Array<{ to: string; label: string; count?: keyof Counts; tone?: "bad" | "accent" }> }> = [
+/** The admin navigation: the modules' own groups first, their content entries after 信源. */
+const nav = (): Array<{ group: string; items: AdminNavEntry[] }> => [
+  ...webModules().flatMap((m) => m.admin?.groups ?? []),
   {
     group: "内容",
     items: [
       { to: "/admin/content", label: "内容诊断" },
       { to: "/admin/sources", label: "信源", count: "sources", tone: "bad" },
-      ...(FEATURES.codexResetMonitor ? [{ to: "/admin/monitor", label: "Codex 重置", count: "monitor" as const, tone: "accent" as const }] : []),
+      ...webModules().flatMap((m) => m.admin?.content ?? []),
       { to: "/admin/feedback", label: "反馈", count: "feedback", tone: "accent" },
     ],
   },
@@ -65,17 +66,18 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
   const { me, counts } = loaderData;
   const navigation = useNavigation();
   const location = useLocation();
-  const flat = NAV.flatMap((g) => g.items);
+  const groups = nav();
+  const flat = groups.flatMap((g) => g.items);
   return (
     <div className="flex min-h-dvh bg-bg">
       <NavigationProgress active={navigation.state === "loading"} />
       <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 flex-col border-r border-line bg-bg-sunk/50 px-3 py-4 lg:flex">
         <a href="/" className="mb-5 flex items-center gap-2 px-2">
           <RingMark className="size-6 text-accent" />
-          <span className="text-[15px] font-semibold tracking-tight text-ink">{SITE.name} 后台</span>
+          <span className="text-[15px] font-semibold tracking-tight text-ink">{`${SITE.name} 后台`}</span>
         </a>
-        <nav className="flex-1 space-y-4 overflow-y-auto">
-          {NAV.map((g) => (
+        <nav className="scrollbar-thin flex-1 space-y-4 overflow-y-auto">
+          {groups.map((g) => (
             <div key={g.group}>
               <div className="mb-1 px-3 text-[11.5px] font-medium tracking-wide text-ink-4">{g.group}</div>
               <div className="space-y-0.5">
@@ -100,7 +102,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
         <div className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur lg:hidden">
           <div className="flex items-center gap-2 px-4 pt-3">
             <RingMark className="size-5 text-accent" />
-            <span className="text-[14px] font-semibold text-ink">{SITE.name} 后台</span>
+            <span className="text-[14px] font-semibold text-ink">{`${SITE.name} 后台`}</span>
             {me.dev && <span className="rounded bg-amber/15 px-1.5 text-[11px] font-medium text-amber">开发</span>}
           </div>
           <nav className="no-scrollbar flex gap-1 overflow-x-auto px-3 py-2">

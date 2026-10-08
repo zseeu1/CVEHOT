@@ -45,13 +45,15 @@ export interface TabItem {
   to?: string;
   prefetch?: "intent";
   replace?: boolean;
+  /** Start the page it opens at the top (another page rather than another view of this one). */
+  resetScroll?: boolean;
   count?: number | null;
 }
 
 const SIZES = {
-  md: "h-9 px-4 text-[14px]",
-  sm: "h-8 px-3.5 text-[13px]",
-  xs: "h-7 px-3 text-[12.5px]",
+  md: "h-11 px-4 text-[14px] lg:h-9",
+  sm: "h-11 px-3.5 text-[13px] lg:h-8",
+  xs: "h-11 px-3 text-[12.5px] lg:h-7",
 } as const;
 
 /**
@@ -81,7 +83,7 @@ export function PillTabs({
         data-pill-track=""
         aria-label={label}
         role={links ? undefined : "tablist"}
-        className={`${fill ? "grid w-full" : "inline-flex w-max"} gap-0.5 rounded-full bg-bg-sunk p-[3px] ring-1 ring-inset ring-line-soft dark:bg-bg-muted/60`}
+        className={`${fill ? "grid w-full" : "inline-flex w-max"} gap-0.5 rounded-full bg-bg-sunk p-0.5 lg:p-[3px] ring-1 ring-inset ring-line-soft dark:bg-bg-muted/60`}
         style={fill ? { gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` } : undefined}
       >
         {items.map((t) => {
@@ -98,7 +100,7 @@ export function PillTabs({
           const cls = `relative inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-full font-medium outline-offset-1 transition-colors duration-150 active:scale-[0.98] ${SIZES[size]} ${on ? "text-ink" : "text-ink-3 hover:text-ink"}`;
           const TabLink = t.prefetch === "intent" ? IntentLink : Link;
           return t.to ? (
-            <TabLink key={t.key} to={t.to} replace={t.replace} preventScrollReset aria-current={on ? "page" : undefined} className={cls}>
+            <TabLink key={t.key} to={t.to} replace={t.replace} preventScrollReset={!t.resetScroll} aria-current={on ? "page" : undefined} className={cls}>
               {inner}
             </TabLink>
           ) : (

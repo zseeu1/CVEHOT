@@ -4,24 +4,57 @@ import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import { sql } from "../db.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { collapseWhitespace, stripTags } from "../lib/text.ts";
+import { stripTags } from "../lib/text.ts";
+import { isVideoPageUrl } from "../lib/video-url.ts";
 import { jinaRead } from "../providers/jina.ts";
 import { BudgetExceededError } from "../providers/receipts.ts";
 import { getArticle } from "../providers/socialdata.ts";
+import { articleUtcOffset, parseLooseDate } from "../sources/dates.ts";
+import type { SourceRow } from "../sources/types.ts";
 import { onlyXArticleLink, xArticleText } from "../sources/x.ts";
 import { sanitizeBody, trimTrailingChrome } from "./sanitize.ts";
-import { contentHash } from "./materials.ts";
+import { contentHash, fillPublicationTime, reviseMaterial } from "./materials.ts";
+import { markdownBody } from "./markdown.ts";
 
 export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
   via: "readability" | "jina";
+  /** The page's publication metadata; neither modification time nor dates mentioned in its prose. */
+  publishedAt?: Date | null;
 }
 
 const MIN_BODY_CHARS = 200;
 
-export function readable(html: string, url: string): ExtractedBody | null {
+/**
+ * Readability leaves out what an inline style hides, but compares style.display and style.visibility
+ * literally, and linkedom keeps the author's case and "!important" in them. A style that sets either is
+ * reduced to what a browser applies: names and keywords in any case, an important declaration over a
+ * later plain one, else the last. The nodes stay in place: Readability restores noscript images beside
+ * their hidden placeholders, and drops every style from the body afterwards.
+ */
+function settleInlineVisibility(document: ReturnType<typeof parseHTML>["document"]) {
+  for (const el of document.querySelectorAll("[style]")) {
+    const style = el.getAttribute("style") ?? "";
+    if (!/display|visibility/i.test(style)) continue;
+    const applied = new Map<string, { value: string; important: boolean }>();
+    for (const declaration of style.split(";")) {
+      const colon = declaration.indexOf(":");
+      const name = declaration.slice(0, colon).trim().toLowerCase();
+      if (colon < 0 || (name !== "display" && name !== "visibility")) continue;
+      const raw = declaration.slice(colon + 1).trim().toLowerCase();
+      const important = /!\s*important$/.test(raw);
+      const value = raw.replace(/!\s*important$/, "").trim();
+      if (value && (important || !applied.get(name)?.important)) applied.set(name, { value, important });
+    }
+    el.setAttribute("style", [...applied].map(([name, { value }]) => `${name}:${value}`).join(";"));
+  }
+}
+
+/** A publication time the page prints without a zone is read in utcOffset (the source's articleUtcOffset). */
+export function readable(html: string, url: string, utcOffset?: string): ExtractedBody | null {
+  if (isVideoPageUrl(url)) return null;
   const { document } = parseHTML(html);
   try {
     const base = document.createElement("base");
@@ -30,6 +63,7 @@ export function readable(html: string, url: string): ExtractedBody | null {
   } catch {
     // no head
   }
+  settleInlineVisibility(document);
   const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
   if (!article?.content) return null;
   const clean = trimTrailingChrome(sanitizeBody(article.content, url));
@@ -42,47 +76,25 @@ export function readable(html: string, url: string): ExtractedBody | null {
     images.push({ kind: "image", url: m[1]!.replace(/&amp;/g, "&"), width: w ? Number(w[1]) : null, height: h ? Number(h[1]) : null });
     if (images.length >= 12) break;
   }
-  return { html: clean, text, images, via: "readability" };
+  return { html: clean, text, images, via: "readability", publishedAt: parseLooseDate(article.publishedTime, utcOffset) };
 }
 
-function markdownToHtml(md: string): string {
-  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (s: string) =>
-    esc(s)
-      .replace(/!\[([^\]]*)\]\((https?:[^)\s]+)\)/g, '<img src="$2" alt="$1">')
-      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>')
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
-  const blocks = md.split(/\n{2,}/);
-  return blocks
-    .map((b) => {
-      const t = b.trim();
-      if (!t) return "";
-      if (/^```/.test(t)) return `<pre><code>${esc(t.replace(/^```\w*\n?|```$/g, ""))}</code></pre>`;
-      const h = /^(#{1,4})\s+(.+)$/.exec(t);
-      if (h) return `<h${Math.min(h[1]!.length + 1, 4)}>${inline(h[2]!)}</h${Math.min(h[1]!.length + 1, 4)}>`;
-      if (/^[-*]\s/.test(t)) return `<ul>${t.split("\n").map((l) => `<li>${inline(l.replace(/^[-*]\s+/, ""))}</li>`).join("")}</ul>`;
-      if (/^>\s?/.test(t)) return `<blockquote><p>${inline(t.replace(/^>\s?/gm, ""))}</p></blockquote>`;
-      return `<p>${inline(t).replace(/\n/g, "<br>")}</p>`;
-    })
-    .join("");
-}
-
-export async function extractFromUrl(url: string, opts: { allowJina: boolean; subject: string }): Promise<ExtractedBody | null> {
+export async function extractFromUrl(url: string, subject: string, utcOffset?: string): Promise<ExtractedBody | null> {
+  if (isVideoPageUrl(url)) return null;
   try {
     const res = await guardedFetch(url, { timeoutMs: 20_000, maxBytes: 6 * 1024 * 1024 });
+    if (isVideoPageUrl(res.url)) return null;
     const type = res.headers.get("content-type") ?? "";
     if (res.status === 200 && /html/.test(type)) {
-      const got = readable(res.text(), res.url);
+      const got = readable(res.text(), res.url, utcOffset);
       if (got) return got;
     }
   } catch {
     // fall through to Jina
   }
-  if (!opts.allowJina) return null;
   try {
-    const page = await jinaRead(url, { purpose: "body_fallback", subject: opts.subject });
-    const html = trimTrailingChrome(sanitizeBody(markdownToHtml(page.markdown), url));
+    const page = await jinaRead(url, { purpose: "body_fallback", subject });
+    const html = markdownBody(page.markdown, url);
     const text = stripTags(html);
     if (text.length < MIN_BODY_CHARS) return null;
     return { html, text, images: [], via: "jina" };
@@ -92,9 +104,9 @@ export async function extractFromUrl(url: string, opts: { allowJina: boolean; su
   }
 }
 
-/** Pages extraction can fetch: ordinary web pages (X posts and WeChat articles arrive whole or not at all). */
+/** Ordinary article pages; player pages have no article body, and social posts arrive separately. */
 export function pageFetchable(url: string, sourceKind: string): boolean {
-  if (sourceKind === "x_search" || sourceKind === "mp_account") return false;
+  if (sourceKind === "x_search" || sourceKind === "mp_account" || isVideoPageUrl(url)) return false;
   try {
     const u = new URL(url);
     return /^https?:$/.test(u.protocol) && !/(^|\.)(x\.com|twitter\.com|mp\.weixin\.qq\.com)$/i.test(u.hostname);
@@ -104,30 +116,41 @@ export function pageFetchable(url: string, sourceKind: string): boolean {
 }
 
 /** Fetches and stores the body of one article. Unconfirmed bodies are recorded as such. */
-export async function extractArticleBody(articleId: string, allowJina = process.env.JINA_BODY_FALLBACK !== "false"): Promise<"ok" | "unconfirmed" | "skipped"> {
-  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null }[]>`
-    SELECT id, url, body_status, revision, x_post FROM articles WHERE id = ${articleId}`;
+export async function extractArticleBody(articleId: string): Promise<"ok" | "unconfirmed" | "skipped"> {
+  const [a] = await sql<{ id: string; url: string; body_status: string; revision: number; x_post: { tweetId?: string } | null; config: SourceRow["config"] }[]>`
+    SELECT a.id, a.url, a.body_status, a.revision, a.x_post, s.config
+    FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!a || a.body_status === "ok") return "skipped";
-  if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId);
-  const got = await extractFromUrl(a.url, { allowJina, subject: `article:${a.id}` });
+  if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId, a.revision);
+  const got = await extractFromUrl(a.url, `article:${a.id}`, articleUtcOffset(a.config));
   if (!got) {
-    await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
-    return "unconfirmed";
+    return markUnconfirmed(articleId, a.revision);
   }
   // The body is new content: a new revision, so an analysis of the body-less input counts as stale.
-  await sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null }[]>`SELECT title, excerpt FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    if (!row) return;
+  return sql.begin(async (tx) => {
+    const [row] = await tx<{ title: string; excerpt: string | null; content_hash: string | null }[]>`
+      SELECT title, excerpt, content_hash FROM articles
+      WHERE id = ${articleId} AND revision = ${a.revision} AND body_status <> 'ok' FOR UPDATE`;
+    if (!row) return "skipped";
+    const time = a.config.detail?.publishedAtAuthoritative === true ? null : await fillPublicationTime(tx, articleId, got.publishedAt);
     const hash = contentHash({ title: row.title, bodyText: got.text, excerpt: row.excerpt });
-    const [r] = await tx<{ revision: number }[]>`
-      UPDATE articles SET body_html = ${got.html}, body_text = ${got.text}, body_status = 'ok',
-        media = CASE WHEN jsonb_array_length(media) = 0 THEN ${tx.json(got.images as never)}::jsonb ELSE media END,
-        revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
-      WHERE id = ${articleId} RETURNING revision`;
-    await tx`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
-             VALUES (${articleId}, ${r!.revision}, ${hash}, ${row.title}, ${got.text})`;
+    if (!time && hash === row.content_hash) {
+      await tx`UPDATE articles SET body_status = 'ok', updated_at = now() WHERE id = ${articleId}`;
+      return "ok";
+    }
+    await reviseMaterial(tx, articleId, {
+      set: sql`body_html = ${got.html}, body_text = ${got.text}, body_status = 'ok',
+        media = CASE WHEN jsonb_array_length(media) = 0 THEN ${sql.json(got.images as never)}::jsonb ELSE media END`,
+      hash, title: row.title, bodyText: got.text,
+    });
+    return "ok";
   });
-  return "ok";
+}
+
+async function markUnconfirmed(articleId: string, revision: number): Promise<"unconfirmed" | "skipped"> {
+  const rows = await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now()
+    WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' RETURNING id`;
+  return rows.length ? "unconfirmed" : "skipped";
 }
 
 /**
@@ -136,28 +159,34 @@ export async function extractArticleBody(articleId: string, allowJina = process.
  * No article (the link points at someone else's, or X has none) leaves the post "unconfirmed", and
  * the judging steps are told the article was not fetched.
  */
-async function extractXArticle(articleId: string, tweetId: string): Promise<"ok" | "unconfirmed"> {
+async function extractXArticle(articleId: string, tweetId: string, revision: number): Promise<"ok" | "unconfirmed" | "skipped"> {
   const found = await getArticle(tweetId, { purpose: "x_article", subject: `article:${articleId}` });
   const got = found ? xArticleText(found) : null;
   if (!got) {
-    await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId} AND body_status <> 'ok'`;
-    return "unconfirmed";
+    return markUnconfirmed(articleId, revision);
   }
-  await sql.begin(async (tx) => {
-    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; x_post: { text?: string } | null }[]>`
-      SELECT title, excerpt, body_text, x_post FROM articles WHERE id = ${articleId} FOR UPDATE`;
-    if (!row) return;
+  return sql.begin(async (tx) => {
+    const [row] = await tx<{ title: string; excerpt: string | null; body_text: string | null; x_post: { text?: string } | null; x_article: { title?: string | null; text?: string } | null }[]>`
+      SELECT title, excerpt, body_text, x_post, x_article FROM articles
+      WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' FOR UPDATE`;
+    if (!row) return "skipped";
+    const block = (a: { title?: string | null; text?: string } | null) => (a ? [a.title ? `# ${a.title}` : "", a.text ?? ""].filter(Boolean).join("\n\n") : "");
+    // The post's own text, without an article appended by an earlier extraction (an admin re-run
+    // extracts again from the post; appending once more would repeat the article).
+    const previous = block(row.x_article);
+    let base = row.body_text ?? "";
+    if (previous && base.endsWith(previous)) base = base.slice(0, -previous.length).replace(/\s+$/, "");
     const title = got.title && onlyXArticleLink(row.x_post?.text) ? got.title : row.title;
-    const bodyText = [row.body_text ?? "", got.title ? `# ${got.title}` : "", got.text].filter(Boolean).join("\n\n");
-    const hash = contentHash({ title, bodyText, excerpt: row.excerpt });
-    const [r] = await tx<{ revision: number }[]>`
-      UPDATE articles SET title = ${title}, body_text = ${bodyText}, x_article = ${tx.json(got as never)}, body_status = 'ok',
-        revision = revision + 1, content_hash = ${hash}, processing_state = 'new', updated_at = now()
-      WHERE id = ${articleId} RETURNING revision`;
-    await tx`INSERT INTO article_revisions (article_id, revision, content_hash, title, body_text)
-             VALUES (${articleId}, ${r!.revision}, ${hash}, ${title}, ${bodyText})`;
+    const bodyText = [base, block(got)].filter(Boolean).join("\n\n");
+    if (bodyText === row.body_text && title === row.title) {
+      // The same article again: nothing new, no new revision.
+      await tx`UPDATE articles SET body_status = 'ok', x_article = ${tx.json(got as never)}, updated_at = now() WHERE id = ${articleId}`;
+      return "ok";
+    }
+    await reviseMaterial(tx, articleId, {
+      set: sql`title = ${title}, body_text = ${bodyText}, x_article = ${sql.json(got as never)}, body_status = 'ok'`,
+      hash: contentHash({ title, bodyText, excerpt: row.excerpt }), title, bodyText,
+    });
+    return "ok";
   });
-  return "ok";
 }
-
-export { collapseWhitespace };

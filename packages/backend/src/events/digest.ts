@@ -1,90 +1,96 @@
 // Story digest: rewritten incrementally as reports arrive; contradictions with earlier reporting are
-// stated explicitly. v1 `digest` and `latest` read the same stored version.
+// stated explicitly. Latest progress is bound to a current public report, not generated independently.
 import { z } from "zod";
 import { modelFor } from "../editorial/models.ts";
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
-import { sha256, stableJson } from "../lib/ids.ts";
+import { digestFactEvidence, digestInputsHash, digestReports, type DigestReport } from "../publication/story-evidence.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
 
 export const DIGEST_PROMPT_VERSION = promptVersion("story-digest");
 
-const SYSTEM = promptText("story-digest");
+export const DIGEST_SYSTEM = promptText("story-digest");
 
-const Schema = z.object({
+export const DigestSchema = z.object({
   title: z.string().max(120).catch(""),
   digest: z.string().min(10).max(2000),
-  latest: z.string().max(300).catch(""),
 });
 
-export function storyStatusFor(latestAt: Date | null, now = Date.now()): "active" | "watching" | "settled" {
-  if (!latestAt) return "settled";
-  const age = now - latestAt.getTime();
-  if (age < 24 * 3600 * 1000) return "active";
-  if (age < 72 * 3600 * 1000) return "watching";
-  return "settled";
+/** Sampling of every digest request. */
+export const DIGEST_SAMPLING = { temperature: 0.3, maxTokens: 1200 };
+
+/** Oldest first; reports from the same moment keep the order digestReports returned them in. */
+export const byReportTime = (a: { at: Date }, b: { at: Date }) => a.at.getTime() - b.at.getTime();
+
+/**
+ * The digest request's input, from one story's reports in byReportTime order. The evaluation
+ * (scripts/eval-story-digests.ts) sends this, the system prompt and the sampling above as they are.
+ */
+export function buildStoryDigestInput(story: { title: string; digest: string | null }, reports: Omit<DigestReport, "story_id">[], opts: { corrected: boolean; knownArticleIds?: string[] }) {
+  const known = new Set(opts.knownArticleIds ?? []);
+  const lines = reports.slice(-40).map((r) => `${opts.corrected || known.has(r.id) ? "" : "【新】"}报道 ${r.id}｜事实 ${r.fact_id}｜${beijingDate(r.at)} ${beijingTime(r.at)}｜${r.source_name}${r.first_party ? "（一手）" : ""}｜${r.title}｜${r.summary ?? ""}\n事实条件与来源证据：${JSON.stringify(digestFactEvidence(r))}`);
+  return opts.corrected
+    ? `事件当前标题：${story.title}\n\n报道内容或事实证据经过更正。请只依据下面这些报道的当前内容重写综述，不要沿用以前版本的说法。\n报道（按时间）：\n${lines.join("\n")}`
+    : `事件当前标题：${story.title}\n${story.digest ? `上一版综述：${story.digest}\n` : ""}\n报道（按时间，标【新】的是上一版之后的新报道）：\n${lines.join("\n")}`;
 }
 
-/** `afterCorrection`: an editor changed a report of this story; rewrite even when older versions lack inputs. */
-export async function composeStoryDigest(storyId: number, opts: { afterCorrection?: boolean } = {}): Promise<{ updated: boolean; version?: number }> {
+/**
+ * A story's digest from its current reports. `rewrite` (rewriteStoryDigest) writes it again from the reports
+ * as they are now with the current prompt, as after a correction: a new wording otherwise reaches a story
+ * only when its reports change.
+ */
+export async function composeStoryDigest(storyId: number, opts: { rewrite?: boolean } = {}): Promise<{ updated: boolean; version?: number }> {
   const [story] = await sql<{ id: number; title: string; digest: string | null; version: number; origin: string }[]>`
     SELECT id, title, digest, version, origin FROM stories WHERE id = ${storyId} AND merged_into IS NULL`;
   if (!story) return { updated: false };
-  const reports = await sql<{ id: string; title: string; summary: string | null; source_name: string; first_party: boolean; at: Date }[]>`
-    SELECT DISTINCT ON (p.article_id) p.article_id AS id, p.title, p.summary, s.name AS source_name, p.first_party,
-      coalesce(p.published_at, p.discovered_at) AS at
-    FROM facts f JOIN fact_articles fa ON fa.fact_id = f.id JOIN publications p ON p.article_id = fa.article_id
-    JOIN sources s ON s.id = p.source_id
-    WHERE f.story_id = ${storyId} AND p.visibility = 'public' AND p.eligible
-    ORDER BY p.article_id`;
-  if (reports.length === 0) return { updated: false };
-  reports.sort((a, b) => a.at.getTime() - b.at.getTime());
+  const reports = await digestReports(sql, [storyId]);
+  if (reports.length === 0) {
+    const cleared = await sql`UPDATE stories SET digest = NULL, latest = NULL, digest_updated_at = NULL, updated_at = now()
+      WHERE id = ${storyId} AND version = ${story.version} AND merged_into IS NULL AND (digest IS NOT NULL OR latest IS NOT NULL)`;
+    return { updated: cleared.count > 0 };
+  }
+  reports.sort(byReportTime);
   const ids = reports.map((r) => r.id).sort();
   // What this version is written from: the reports and what they currently say (corrections included).
-  const inputsHash = sha256(stableJson([...reports].sort((a, b) => a.id.localeCompare(b.id)).map((r) => [r.id, r.title, r.summary ?? ""])));
-  const [last] = await sql<{ article_ids: string[]; inputs_hash: string | null }[]>`
-    SELECT article_ids, inputs_hash FROM story_digests WHERE story_id = ${storyId} ORDER BY version DESC LIMIT 1`;
+  const inputsHash = digestInputsHash(reports);
+  const [last] = await sql<{ article_ids: string[]; inputs_hash: string | null; digest: string; receipt_id: number | null }[]>`
+    SELECT article_ids, inputs_hash, digest, receipt_id FROM story_digests WHERE story_id = ${storyId} ORDER BY version DESC LIMIT 1`;
   const sameReports = !!last && JSON.stringify([...last.article_ids].sort()) === JSON.stringify(ids);
-  // Versions written before inputs were recorded compare by report set only.
-  if (sameReports && (last!.inputs_hash === inputsHash || (last!.inputs_hash === null && !opts.afterCorrection))) return { updated: false };
-  // Same reports, different content: an editor corrected one. Rewrite from the reports as they are now,
-  // without the previous digest, so a corrected fact does not survive as "earlier reports said".
-  const corrected = sameReports;
-  const known = new Set(last?.article_ids ?? []);
-
-  const lines = reports.slice(-40).map((r) => `${corrected || known.has(r.id) ? "" : "【新】"}${beijingDate(r.at)} ${beijingTime(r.at)}｜${r.source_name}${r.first_party ? "（一手）" : ""}｜${r.title}｜${(r.summary ?? "").slice(0, 220)}`);
-  const user = corrected
-    ? `事件当前标题：${story.title}\n\n报道内容经过编辑更正。请只依据下面这些报道的当前内容重写综述，不要沿用以前版本的说法。\n报道（按时间）：\n${lines.join("\n")}`
-    : `事件当前标题：${story.title}\n${story.digest ? `上一版综述：${story.digest}\n` : ""}\n报道（按时间，标【新】的是上一版之后的新报道）：\n${lines.join("\n")}`;
-  const res = await chatJson({
+  if (!opts.rewrite && story.digest !== null && sameReports && last!.inputs_hash === inputsHash) return { updated: false };
+  // Same reports, different content: an editor corrected one. A report gone from the story (withdrawn,
+  // or regrouped elsewhere) likewise. Rewrite from the reports as they are now, without the previous
+  // digest, so a corrected or withdrawn fact does not survive as "earlier reports said".
+  const dropped = !!last && last.article_ids.some((id) => !ids.includes(id));
+  const corrected = opts.rewrite === true || sameReports || dropped;
+  const user = buildStoryDigestInput(story, reports, { corrected, knownArticleIds: last?.article_ids });
+  const latest = reports[reports.length - 1]!.title;
+  // A withdrawal clears the public projection but retains its history. Restoring exactly the same
+  // evidence reuses that digest through the normal version/input checks, without another model call.
+  const res = !opts.rewrite && last?.inputs_hash === inputsHash ? { data: { title: "", digest: last.digest }, receiptId: last.receipt_id } : await chatJson({
     model: await modelFor("digest"), purpose: "story_digest", subject: `story:${storyId}@${ids.length}`, promptVersion: DIGEST_PROMPT_VERSION,
-    system: SYSTEM, user, schema: Schema, temperature: 0.3, maxTokens: 1200,
+    system: DIGEST_SYSTEM, user, schema: DigestSchema, ...DIGEST_SAMPLING,
   });
   const version = story.version + 1;
-  await sql.begin(async (tx) => {
+  const updated = await sql.begin(async (tx) => {
+    const [current] = await tx<{ version: number; merged_into: number | null }[]>`
+      SELECT version, merged_into FROM stories WHERE id = ${storyId} FOR UPDATE`;
+    // Report corrections, withdrawals and membership changes do not necessarily bump the story
+    // version. Compare the same input identity again after the model returns.
+    if (!current || current.version !== story.version || current.merged_into !== null || digestInputsHash(await digestReports(tx, [storyId])) !== inputsHash) {
+      // A paid response remains reusable even when an editor or another digest won the race.
+      if (res.receiptId !== null) await completeReceipt(tx, res.receiptId);
+      return false;
+    }
     await tx`INSERT INTO story_digests (story_id, version, digest, latest, receipt_id, article_ids, inputs_hash)
-             VALUES (${storyId}, ${version}, ${res.data.digest}, ${res.data.latest || null}, ${res.receiptId}, ${ids}, ${inputsHash})`;
-    await tx`UPDATE stories SET digest = ${res.data.digest}, latest = ${res.data.latest || null}, digest_updated_at = now(),
+             VALUES (${storyId}, ${version}, ${res.data.digest}, ${latest}, ${res.receiptId}, ${ids}, ${inputsHash})`;
+    await tx`UPDATE stories SET digest = ${res.data.digest}, latest = ${latest}, digest_updated_at = now(),
                title = CASE WHEN origin = 'manual' OR ${res.data.title} = '' THEN title ELSE ${res.data.title} END,
                version = ${version}, updated_at = now()
              WHERE id = ${storyId}`;
-    await completeReceipt(tx, res.receiptId);
+    if (res.receiptId !== null) await completeReceipt(tx, res.receiptId);
+    return true;
   });
-  return { updated: true, version };
-}
-
-/** Periodic: statuses follow activity (持续更新 / 观察中 / 历史事件). */
-export async function refreshStoryStatuses(): Promise<{ updated: number }> {
-  const res = await sql`
-    UPDATE stories SET status = CASE
-      WHEN latest_at > now() - interval '24 hours' THEN 'active'
-      WHEN latest_at > now() - interval '72 hours' THEN 'watching'
-      ELSE 'settled' END
-    WHERE merged_into IS NULL AND status <> CASE
-      WHEN latest_at > now() - interval '24 hours' THEN 'active'
-      WHEN latest_at > now() - interval '72 hours' THEN 'watching'
-      ELSE 'settled' END`;
-  return { updated: res.count };
+  return updated ? { updated: true, version } : { updated: false };
 }

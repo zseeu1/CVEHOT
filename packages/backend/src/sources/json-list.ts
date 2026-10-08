@@ -1,7 +1,8 @@
 // JSON sources: plain JSON APIs, JSON embedded in HTML (script tags, window variables).
 import { credential } from "../config.ts";
-import { guardedFetch } from "../lib/http-fetch.ts";
+import { fetchListing } from "./listing-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
+import { parseLooseDate } from "./dates.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
@@ -39,17 +40,32 @@ export function renderTemplate(template: string, item: unknown): string | null {
   return missing ? null : out;
 }
 
-function toDate(v: unknown, unit: string | undefined): Date | null {
+/** "2026-09-30 17:43:58": a date and time without a zone, which Date.parse would read in the server's zone. */
+const ZONELESS_TIME = /^\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+function toDate(v: unknown, unit: string | undefined, utcOffset: string | undefined): Date | null {
   if (v === null || v === undefined || v === "") return null;
-  if (unit === "epoch_ms") return new Date(Number(v));
-  if (unit === "epoch_s") return new Date(Number(v) * 1000);
+  // JSON can hold a value nothing converts ({"toString": null}, or a list of one): it is no date, and the
+  // items after it are still read.
+  let text: string;
+  try {
+    text = String(v).trim();
+  } catch {
+    return null;
+  }
+  if (unit === "epoch_ms" || unit === "epoch_s") {
+    const date = new Date(Number(text) * (unit === "epoch_s" ? 1000 : 1));
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
   // 20260922: a calendar day at UTC midnight (some list APIs give dates as yyyymmdd).
   if (unit === "yyyymmdd") {
-    const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(v).trim());
+    const m = /^(\d{4})(\d{2})(\d{2})$/.exec(text);
     const d = m ? new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`) : null;
     return d && Number.isFinite(d.getTime()) && d.toISOString().startsWith(`${m![1]}-${m![2]}-${m![3]}`) ? d : null;
   }
-  const t = Date.parse(String(v));
+  // A time without a zone is in the source's offset, as list pages read it; any other text as Date.parse reads it.
+  if (ZONELESS_TIME.test(text)) return parseLooseDate(text, utcOffset);
+  const t = Date.parse(text);
   return Number.isFinite(t) ? new Date(t) : null;
 }
 
@@ -136,7 +152,8 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     const token = credential("collectors", "GITHUB_TOKEN");
     if (token) headers.authorization = `Bearer ${token}`;
   }
-  const res = await guardedFetch(url, {
+  const res = await fetchListing(url, {
+    redirectPolicy: "same-origin",
     method: c.method ?? "GET",
     headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
     body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
@@ -165,14 +182,12 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
     if (!title || !url) continue;
     const externalId = c.externalIdPath ? getPath(item, c.externalIdPath) : null;
     const summary = firstString(item, c.summaryPaths);
-    const raw = item && typeof item === "object" ? { ...(item as Record<string, unknown>) } : { value: item };
-    for (const k of c.rawDropKeys ?? []) delete (raw as Record<string, unknown>)[k];
     const summaryIsBody = c.summaryIsBody === true && !!summary;
     out.push({
       url,
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
-      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit),
+      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit, c.publishedAtUtcOffset),
       excerpt: summary ? collapseWhitespace(stripTags(summary)).slice(0, 2000) : null,
       bodyText: summaryIsBody ? stripTags(summary!) : null,
       bodyStatus: summaryIsBody ? "ok" : "pending",

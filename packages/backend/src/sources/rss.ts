@@ -1,10 +1,12 @@
 // RSS 2.0 / Atom / RDF feeds.
 import { XMLParser } from "fast-xml-parser";
-import { guardedFetch } from "../lib/http-fetch.ts";
-import { collapseWhitespace, stripTags } from "../lib/text.ts";
+import { fetchListing } from "./listing-fetch.ts";
+import { collapseWhitespace, escapeXml, stripTags } from "../lib/text.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
-import { identityKeyForUrl } from "../lib/url.ts";
+import { identityKeyFor } from "../content/materials.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
+import { normalizeUrl } from "../lib/url.ts";
+import { isVideoPageUrl } from "../lib/video-url.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
 const parser = new XMLParser({
@@ -32,9 +34,28 @@ function text(v: unknown): string {
   return "";
 }
 
+/** Atom defaults to text: XML entities have already been decoded, and literal markup is not HTML. */
+function atomPlainText(v: unknown): string | null {
+  const type = v && typeof v === "object" ? (v as Record<string, unknown>)["@type"] : undefined;
+  return type === undefined || type === "text" ? text(v) : null;
+}
+
 function arr<T>(v: T | T[] | undefined | null): T[] {
   if (v === undefined || v === null) return [];
   return Array.isArray(v) ? v : [v];
+}
+
+/** Media RSS descriptions describe the video; even a long description is not a transcript. */
+function mediaDescription(entry: Record<string, any>): string | null {
+  const groups = arr<Record<string, any>>(entry["media:group"]);
+  const containers = [...groups.flatMap(group => arr<Record<string, any>>(group["media:content"])), ...arr<Record<string, any>>(entry["media:content"]), ...groups, entry];
+  for (const container of containers) {
+    const description = container["media:description"];
+    const value = text(description);
+    if (!value) continue;
+    return collapseWhitespace(description?.["@type"] === "html" ? stripTags(value) : value).slice(0, 2000) || null;
+  }
+  return null;
 }
 
 function parseDate(v: string): Date | null {
@@ -47,12 +68,14 @@ function parseDate(v: string): Date | null {
   return Number.isFinite(t2) ? new Date(t2) : null;
 }
 
-function atomLink(links: unknown): string {
+function atomLink(links: unknown, base: string): string {
   const list = arr(links as Record<string, string> | Array<Record<string, string>>);
   const alt = list.find((l) => typeof l === "object" && (!l["@rel"] || l["@rel"] === "alternate"));
-  if (alt && typeof alt === "object") return alt["@href"] ?? "";
-  const first = list[0];
-  return typeof first === "string" ? first : first?.["@href"] ?? "";
+  const link = alt ?? list[0];
+  const href = typeof link === "string" ? link : link?.["@href"];
+  if (!href) return "";
+  const linkBase = typeof link === "object" ? new URL(link["@xml:base"] ?? "", base).toString() : base;
+  return new URL(href, linkBase).toString();
 }
 
 function imagesFrom(html: string, base: string): Array<{ kind: "image"; url: string }> {
@@ -90,15 +113,17 @@ export function isTeaser(text: string): boolean {
 
 /**
  * The body and excerpt of a feed entry: its text when it is the article, else no body (a summary, or
- * a teaser that stands in as the excerpt when the entry has none).
+ * a teaser that stands in as the excerpt when the entry has none) until extraction reads the entry's
+ * page; an entry without a page has none. A short text is taken for a summary, unless the source
+ * declares its summary to be the body.
  */
-function feedText(bodyHtml: string | null, summaryHtml: string, source: SourceRow): Pick<Candidate, "excerpt" | "bodyHtml" | "bodyText" | "bodyStatus"> {
-  const bodyText = bodyHtml ? stripTags(bodyHtml) : null;
+function feedText(bodyHtml: string | null, summaryText: string | null, source: SourceRow, hasPage = true, plainBody: string | null = null): Pick<Candidate, "excerpt" | "bodyHtml" | "bodyText" | "bodyStatus"> {
+  const bodyText = bodyHtml ? collapseWhitespace(plainBody ?? stripTags(bodyHtml)) : null;
   const teaser = !!bodyText && source.participation_mode === "editorial" && isTeaser(bodyText);
-  const excerpt = summaryHtml ? collapseWhitespace(stripTags(summaryHtml)).slice(0, 2000) : teaser ? collapseWhitespace(bodyText!) : null;
-  return bodyText && bodyText.length > 280 && !teaser
+  const excerpt = summaryText !== null ? collapseWhitespace(summaryText).slice(0, 2000) : teaser ? collapseWhitespace(bodyText!) : null;
+  return bodyText && (bodyText.length > 280 || source.config.summaryIsBody === true) && !teaser
     ? { excerpt, bodyHtml, bodyText, bodyStatus: "ok" }
-    : { excerpt, bodyHtml: null, bodyText: null, bodyStatus: "pending" };
+    : { excerpt, bodyHtml: null, bodyText: null, bodyStatus: hasPage ? "pending" : "none" };
 }
 
 interface RssValidator {
@@ -123,10 +148,10 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
   const headers: Record<string, string> = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8" };
   if (previous?.etag) headers["if-none-match"] = previous.etag;
   if (previous?.lastModified) headers["if-modified-since"] = previous.lastModified;
-  let res = await guardedFetch(url, { headers, timeoutMs: 25_000 });
+  let res = await fetchListing(url, { headers, timeoutMs: 25_000 });
   // A redirect may have changed destinations, whose ETag namespace is unrelated to the old one.
   if (res.status === 304 && previous && res.url !== previous.responseUrl) {
-    res = await guardedFetch(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000 });
+    res = await fetchListing(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000 });
   }
   const validator: RssValidator = {
     configHash, responseUrl: res.url,
@@ -144,37 +169,43 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
     throw new FetchError(`feed parse error: ${String(e).slice(0, 200)}`);
   }
   const summaryIsBody = source.config.summaryIsBody === true;
-  // Entries that are sections of one page (#september-24-2026 …) keep their fragment as identity.
-  const identity = (link: string) =>
-    source.config.preserveUrlFragment === true ? { identityKey: identityKeyForUrl(link, { keepFragment: true }) ?? undefined } : {};
   const out: Candidate[] = [];
 
   const channel = doc.rss?.channel ?? doc["rdf:RDF"];
   if (channel) {
     const items = arr(doc.rss?.channel?.item ?? doc["rdf:RDF"]?.item);
     for (const it of items) {
-      const link = text(it.link) || text(it.guid);
+      const guid = text(it.guid);
+      const page = text(it.link) || (normalizeUrl(guid) ? guid : "");
+      const enclosures = arr(it.enclosure as Record<string, string> | Array<Record<string, string>>);
+      // An episode with no page (no <link>, a guid that is no address) links to its audio or video file,
+      // which a browser plays. Its identity stays the one its guid gives, and it has no page to read a body from.
+      const mediaFile = !page && guid ? enclosures.find((e) => /^(audio|video)\//.test(e?.["@type"] ?? ""))?.["@url"] ?? "" : "";
+      const link = page || mediaFile || guid;
       const title = collapseWhitespace(stripTags(text(it.title)));
       if (!link || !title) continue;
       const contentEncoded = text(it["content:encoded"]);
       const description = text(it.description);
-      const bodyHtmlRaw = contentEncoded || (summaryIsBody ? description : "");
+      const video = isVideoPageUrl(link);
+      const videoExcerpt = video ? mediaDescription(it) : null;
+      const bodyHtmlRaw = contentEncoded || (summaryIsBody && !video ? description : "");
       const bodyHtml = bodyHtmlRaw ? sanitizeBody(bodyHtmlRaw, link) : null;
-      const enclosure = arr(it.enclosure as Record<string, string> | Array<Record<string, string>>).find((e) => /^image\//.test(e?.["@type"] ?? ""));
+      const enclosure = enclosures.find((e) => /^image\//.test(e?.["@type"] ?? ""));
       const media = [
         ...(enclosure ? [{ kind: "image" as const, url: enclosure["@url"]! }] : []),
         ...(bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, link) : []),
       ];
       out.push({
         url: link,
-        ...identity(link),
+        ...(mediaFile ? { identityKey: identityKeyFor({ sourceId: source.id, url: guid, title, via: "fetch" }) } : {}),
         title,
         author: text(it["dc:creator"]) || text(it.author) || null,
         publishedAt: parseDate(text(it.pubDate) || text(it["dc:date"]) || text(it.published)),
-        ...feedText(bodyHtml, description, source),
+        ...feedText(bodyHtml, description ? stripTags(description) : null, source, !mediaFile && !video),
+        ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),
         media: media.slice(0, 6),
         categories: arr(it.category).map((c) => text(c)).filter(Boolean),
-        raw: { guid: text(it.guid) || null },
+        raw: { guid: guid || null },
       });
     }
     return { candidates: out, validator, notModified: false };
@@ -182,23 +213,29 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
 
   const feed = doc.feed;
   if (feed) {
+    // XML Base is inherited; redirects determine the document's base, not the configured URL.
+    const feedBase = new URL(feed["@xml:base"] ?? "", res.url).toString();
     for (const e of arr(feed.entry)) {
-      const link = atomLink(e.link);
-      const title = collapseWhitespace(stripTags(text(e.title)));
-      if (!link || !title) continue;
-      const content = text(e.content);
-      const summary = text(e.summary);
-      const bodyHtml = content ? sanitizeBody(content, link) : null;
-      const entryUrl = new URL(link, url).toString();
+      const entryBase = new URL(e["@xml:base"] ?? "", feedBase).toString();
+      const entryUrl = atomLink(e.link, entryBase);
+      const title = collapseWhitespace(atomPlainText(e.title) ?? stripTags(text(e.title)));
+      if (!entryUrl || !title) continue;
+      const summary = text(e.summary) ? atomPlainText(e.summary) ?? stripTags(text(e.summary)) : null;
+      const video = isVideoPageUrl(entryUrl);
+      const videoExcerpt = video ? mediaDescription(e) : null;
+      const body = text(e.content) ? e.content : summaryIsBody && !video ? e.summary : null;
+      const plainBody = atomPlainText(body);
+      const bodyHtmlRaw = plainBody === null ? text(body) : escapeXml(plainBody);
+      const bodyHtml = bodyHtmlRaw ? sanitizeBody(bodyHtmlRaw, entryUrl) : null;
       out.push({
         url: entryUrl,
-        ...identity(entryUrl),
         title,
         author: text(arr(e.author)[0]?.name) || null,
         publishedAt: parseDate(text(e.published) || text(e.updated)),
         sourceUpdatedAt: parseDate(text(e.updated)),
-        ...feedText(bodyHtml, summary, source),
-        media: content ? imagesFrom(content, link) : [],
+        ...feedText(bodyHtml, summary, source, !video, plainBody),
+        ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),
+        media: bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, entryUrl) : [],
         categories: arr(e.category).map((c: any) => c?.["@term"] ?? text(c)).filter(Boolean),
         raw: { id: text(e.id) || null },
       });

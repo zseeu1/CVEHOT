@@ -1,36 +1,23 @@
-import { SITE } from "@aihot/industry/site";
+import { SITE } from "@aihot/site";
 import { Fragment, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import type { Route } from "./+types/selectbench-run";
+import type { AdminSelectBenchCases, AdminSelectBenchDecision } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
 import { bj, num, pct } from "../../features/admin/format";
 import { AdminPage, Badge, Card, Empty, FilterChips, Select } from "../../features/admin/ui";
 
-interface Decision {
-  decision: "select" | "reject" | null;
-  score: number | null;
-  relevance: string | null;
-  category: string | null;
-  reason: string | null;
-  error: string | null;
-  receiptId: number | null;
-}
-interface Data {
-  run: { id: string; label: string; split: string | null; sample_size: number; prompt_version: string | null; models: string[]; summary: Record<string, Record<string, number>>; created_at: string };
-  rows: Array<{ case_id: string; title: string; stratum: string | null; gold: "select" | "reject" | "either"; by_model: Record<string, Decision> }>;
-  strata: Array<{ stratum: string | null; n: number }>;
-}
 
 export async function loader({ request, params }: Route.LoaderArgs) {
-  return adminGet<Data>(request, `/api/admin/selectbench/${encodeURIComponent(params.runId)}${new URL(request.url).search}`);
+  return adminGet<AdminSelectBenchCases>(request, `/api/admin/selectbench/${encodeURIComponent(params.runId)}${new URL(request.url).search}`);
 }
 
 export const meta: Route.MetaFunction = ({ loaderData }) => [{ title: `${loaderData?.run.label ?? "SelectBench"} · ${SITE.name} 后台` }];
 
 const GOLD: Record<string, [string, "accent" | "muted" | "info"]> = { select: ["应入选", "accent"], reject: ["不选", "muted"], either: ["两可", "info"] };
 
-function verdict(d: Decision | undefined, gold: string) {
+function verdict(d: AdminSelectBenchDecision | undefined, gold: string) {
   if (!d) return <span className="text-ink-4">—</span>;
   if (d.decision === null) return <Badge tone="bad" title={d.error ?? undefined}>失败</Badge>;
   const right = gold === "either" || d.decision === gold;
@@ -64,9 +51,10 @@ export default function SelectBenchRun({ loaderData: d }: Route.ComponentProps) 
           return (
             <button key={m} onClick={() => set("model", m)} className={`rounded-panel p-4 text-left ring-1 transition-colors ${m === model ? "bg-accent-softer ring-accent/40" : "bg-surface ring-line hover:bg-bg-sunk/60"}`}>
               <div className="text-[13.5px] font-semibold text-ink">{m}</div>
-              <div className="num mt-1.5 text-[22px] font-semibold tracking-tight text-ink">F1 {pct(s.f1)}</div>
-              <div className="num mt-0.5 text-[12px] text-ink-3">准确 {pct(s.accuracy)} · 精确 {pct(s.precision)} · 召回 {pct(s.recall)}</div>
-              <div className="num mt-0.5 text-[12px] text-ink-4">误选 {s.fp ?? "—"} · 漏选 {s.fn ?? "—"} · 失败 {s.errors ?? 0}</div>
+              <div className="num mt-1.5 text-[22px] font-semibold tracking-tight text-ink">有效输出 F1 {pct(s.f1)}</div>
+              <div className="num mt-0.5 text-[12px] text-ink-3">有效输出准确 {pct(s.accuracy)} · 覆盖 {pct(s.coverage)} · 完整准确 {pct(s.completeAccuracy)}</div>
+              <div className="num mt-0.5 text-[12px] text-ink-3">精确 {pct(s.precision)} · 召回 {pct(s.recall)} · 金标入选 {pct(s.goldSelectRate)}</div>
+              <div className="num mt-0.5 text-[12px] text-ink-4">误选 {s.fp ?? "—"} · 漏选 {s.fn ?? "—"} · {s.decisiveErrors !== undefined ? <>决定失败 {s.decisiveErrors}{s.eitherErrors ? ` · 两可失败 ${s.eitherErrors}` : ""}</> : <>失败 {s.errors ?? 0}</>}</div>
             </button>
           );
         })}
