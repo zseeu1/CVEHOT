@@ -67,7 +67,29 @@
 | `packages/backend/src/reports/compose.ts` | 指标 `modelsReleased` → `exploited`，取「在野利用与紧急处置」节的数量 |
 | `packages/backend/src/publication/items.ts`、`apps/api/src/routes/v1.ts` | 删掉旧分类 `tip`/`opinion` 特判（**不改会编译报错**），v1 分类 fallback 改成第一个类别 |
 
-### d. 新增文档与脚本
+### d. 新增：GitHub CVE 仓库索引（学自 buaq.net/cve）
+
+`scripts/cve-repo-index.ts` + 表 `cve_repos`（`database/migrations/0900_cve_repos.sql`，编号取 0900 远离上游序列防撞号）。
+
+补的是**历史纵深**：`gh-poc-scan.ts` 和 `json-gh-new-cve-repos` 都只看最近几天新出现的仓库，回答不了
+「CVE-2026-21589 到现在一共有多少个 PoC」。这个旁路把 GitHub 搜索语料收进自己的表，
+按编号查得到一个明确数字；**不进任何流水线、零模型调用**。
+
+```bash
+docker compose exec -T worker node scripts/cve-repo-index.ts --lookup CVE-2026-21589 --live  # 实时权威数量
+docker compose exec -T worker node scripts/cve-repo-index.ts --lookup CVE-2026-21589        # 查索引（不联网）
+docker compose exec -T worker node scripts/cve-repo-index.ts --days 3                        # 每日增量
+docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-year 2024 --pages 3
+docker compose exec -T worker node scripts/cve-repo-index.ts --stats
+```
+
+实测：`--lookup CVE-2026-21589 --live` → `total_count = 9`（Atlassian DC 越权读，2026-10-07 起陆续出现）。
+
+⚠️ **两个坑**：① **GitHub 搜索单查询上限 1000 条**，按月切片后繁忙月份仍会超（2026-05 有 2295 条），
+所以索引是「抽到的最新一批」不是全量普查，要准确数量用 `--live`；② **背填占的是站点信源同一个未认证额度**
+（搜索 10 次/分钟），背填前先配 `GITHUB_TOKEN`，否则慢且可能挤掉信源。
+
+### d2. 新增文档与脚本
 
 - [`docs/cve-pack.md`](docs/cve-pack.md)：信源表、评分口径、校准方法、代码改动清单、已知缺口
 - [`scripts/check-cve-pack.ts`](scripts/check-cve-pack.ts)：行业包自检（配置项白名单、词表一致性、权重表和、提示词引用）
@@ -136,8 +158,9 @@
 2. **`npm test` 未跑**。类型错误已清（`ai-models`→`advisory`、`ai-products`→`poc`，40 处 / 28 文件；`category-corrections.test.ts` 里断言 `modelsReleased` 的用例已改写为断言 `exploited`），但 `tests/` 与 `apps/web/tests/` 里**还有 AI 行业的文案值**（`模型发布`、`itemType: "model_release"`、`"tip"`、`"drop"`、`"model"` 等）—— 它们不是类型错误，所以 typecheck 不报，**只有连上数据库跑一遍才知道哪些会失败**。按 `docs/customize.md`：把例子换成漏洞行业的对应项即可，规则本身不用改。跑测试需要一个库名以 `_test` 或 `_ci` 结尾的独立数据库。
 3. **门槛未校准**：T1 58 / T1_5 62 / T2 72 是起手值。做法：挑 100–200 条自己标「该选/不该选」写成 `.data/gold.jsonl`（格式见 `industry/gold.example.jsonl`）→ `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl` → 看后台 SelectBench 逐条复盘。判错重灾区通常是「厂商营销混在通告里」和「没有影响版本的传闻」。
 4. **待你决定的文案**：`routes/story.tsx` 与 `routes/item.tsx` 里的「AI 导读」「AI 综述」没改 —— 这两处说的是「模型生成的内容」，语义上是对的，要不要跟着变成「模型导读 / 模型综述」由你定。
-5. 给 `gh-poc-scan` 挂 cron（建议 30–60 分钟一次）。
-6. 可选：配 `GITHUB_TOKEN`；接入中文厂商通告信源；把 buaq 那条「CVE 仓库全量索引」旁路做出来（零模型成本，补「某个 CVE 历史上有多少 PoC」的盲区）。
+5. **CVE 仓库索引还没背填**：表已建、脚本可用（实测通过），但库里目前只有试跑的 42 行。背填前**先配 `GITHUB_TOKEN`**（背填与站点信源共用未认证的 10 次/分钟搜索额度，不配会把信源挤掉）。建议：`--backfill --from-year 2024 --pages 3`，之后 cron 每天跑一次 `--days 3`。
+6. 给 `gh-poc-scan` 挂 cron（建议 30–60 分钟一次）。
+7. 可选：接入中文厂商通告信源；把索引做到网页上（现在只有 CLI，见 `docs/cve-pack.md`）。
 
 ## 8. 常用命令
 
@@ -155,6 +178,11 @@ node scripts/check-cve-pack.ts
 
 # 推送 GitHub 上的新 CVE 仓库（容器里跑，注意 base URL 是 web:3000）
 docker compose exec -T -e AIHOT_BASE_URL=http://web:3000 api node scripts/gh-poc-scan.ts --days 1 --dry-run
+
+# CVE 仓库索引（详见 §3d）
+docker compose exec -T worker node scripts/cve-repo-index.ts --lookup CVE-2026-21589 --live
+docker compose exec -T worker node scripts/cve-repo-index.ts --days 3
+docker compose exec -T worker node scripts/cve-repo-index.ts --stats
 
 # 给某个源补分析（例如刚把 isolated 改成 editorial）
 docker compose exec -T worker node scripts/enqueue-analysis.ts --limit 500
@@ -206,3 +234,4 @@ docker compose logs -f --tail 100 api worker web
 - **2026-09-30**：克隆仓库；通读 `industry/` 与采集器源码；实测一批 CVE 信源可达性；写出 CVE 行业包（信源/分类/主题/提示词/门槛）、PoC 扫描脚本、修掉框架里写死的 AI 文案；重新生成报头字；`npm run typecheck` 通过。
 - **2026-10-03**：`init-env` 生成 `.env`；`docker compose up -d --build` 起站；建 `gh-poc-scan` 源（editorial）并首次推送；端到端验证通过（9 个信源全 ok，148 条资料 / 113 条分析 / 19 条精选）；自检脚本落进仓库、补写本文档。
 - **2026-10-08**：先把 31 个未提交改动收成基线提交 `5ff86e1`（并设了仓库级 git 身份，原来是空的）；`git fetch --unshallow` 拿到完整历史；合并上游 69 个提交（`6e67a9d9`），18 个冲突全部解决；**发现并恢复被静默覆盖的 CVEHOT 报头字**；把站点身份全部搬到 `site/site.ts`；把报眼指标「条在野利用」在 4.0.0 新架构里接回；提示词按「上游新版 + 追加 CVE 规则」合；tests 夹具类目改 40 处。`main` = `9dd3b0b`。`npm run typecheck` 七工程全过、行业包自检全过。**容器尚未重启，迁移与数据库备份待做**（见 §7 第 1 条、§8）。
+- **2026-10-08（傍晚）**：他重启容器到 4.0.0，验证通过——57 个迁移全部应用、`lb_*`/`monitor_*`/`fx_rates` 已删、站点 200、数据 958 条。随后按 buaq.net/cve 的思路做出 **CVE 仓库索引旁路**（`scripts/cve-repo-index.ts` + 迁移 `0900_cve_repos.sql`，`--live` 实测返回 `total_count = 9`）。表已建、脚本已进镜像；**历史背填未做**（要先配 `GITHUB_TOKEN`，见 §7 第 5 条）。
