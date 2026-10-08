@@ -1,15 +1,16 @@
 # log.md — CVEHOT 工作日志（AIHOT → CVE 监控站）
 
-> 给下一个接手的人或 agent。**最后更新：2026-10-08 15:55 (+08:00)**
+> 给下一个接手的人或 agent。**最后更新：2026-10-08 19:50 (+08:00)**
 > 详细说明在 [docs/cve-pack.md](docs/cve-pack.md)，本文是进度、现状与踩过的坑。
 
 ## 0. 一句话现状
 
 站点**已经在跑**：`/Users/star/notes/AIHOT`，Docker 本机 http://localhost:3000（后台 `/admin`）。
-9 个信源全部抓取正常，库里 148 条资料 / 113 条已分析 / 19 条精选。行业包已从「AI 新闻」改成「漏洞情报」。
+9 个信源全部抓取正常，库里 **993 条资料 / 980 条已分析 / 173 条精选**。行业包已从「AI 新闻」改成「漏洞情报」。
 
-**2026-10-08：仓库已升到上游 4.0.0（69 个提交）。** 代码侧 `npm run typecheck`（七个工程）与行业包自检全过。
-⚠️ **容器还是 4 天前的旧镜像，尚未重启** —— 重启与数据库迁移步骤见 §8，动手前先看 §7 第 1、2 条。
+**2026-10-08：已升到上游 4.0.0（69 个提交）并跑起来了。** 57 个迁移全部应用，`main` = `680d54a`（95 个提交），
+`npm run typecheck`（七个工程）与行业包自检全过，站点正常出内容。
+⚠️ **唯一没有保护的是数据库** —— `.env` 里没配 `DB_BACKUP_STORE_*`，自动备份是关的，最新手动 dump 还停在升级前。见 §7 第 1 条。
 
 ## 1. 目标与边界
 
@@ -21,13 +22,14 @@
 
 | 项 | 状态 |
 |---|---|
-| 仓库 | `/Users/star/notes/AIHOT`，`main` = `9dd3b0b`（2026-10-08 合并上游 4.0.0 后），**完整历史**。回退点：升级前基线 `5ff86e1`、更早的 `c3ba0ca` |
+| 仓库 | `/Users/star/notes/AIHOT`，`main` = `680d54a`（2026-10-08 晚），95 个提交，**完整历史**。回退点：升级前基线 `5ff86e1`、更早的 `c3ba0ca` |
 | Node | v24.19.0；`node_modules` 已装（**只给 typecheck 等开发操作用**，容器内自带依赖） |
-| `.env` | 已生成。已设置：`ADMIN_PASSWORD`、`POSTGRES_PASSWORD`、`LLM_API_KEY`（DeepSeek）、`INGEST_TOKEN`(64 字符)。**`GITHUB_TOKEN` 未设置**（可选，见下） |
+| `.env` | 已生成。已设置：`ADMIN_PASSWORD`、`POSTGRES_PASSWORD`、`LLM_API_KEY`（DeepSeek）、`INGEST_TOKEN`(64 字符)、**`GITHUB_TOKEN`**（已配，索引背填与 gh-poc-scan 靠它走认证额度）。**`DB_BACKUP_STORE_*` 未配** → 自动备份关着，见 §7 第 1 条 |
 | 模型 | `LLM_BASE_URL=https://api.deepseek.com/v1`，`LLM_MODEL=deepseek-flash` |
-| 容器 | `db` healthy、`api`/`worker`/`web` 均在跑（`setup` 跑完即退出，正常）。⚠️ 跑的是 **4 天前的旧镜像**，磁盘上已是 4.0.0 代码，待重建重启 |
+| 容器 | `db` healthy、`api`/`worker`/`web` 均在跑（`setup` 跑完即退出，正常）。镜像 2026-10-08 构建，跑的就是 4.0.0 代码（旧镜像那批已在磁盘清理时删掉） |
 | 信源 | 9 个：8 个预置 + `gh-poc-scan`，全部 `editorial` + `enabled` + `health=ok` |
-| 数据 | articles 148 / analyses 113 / selected 19 / public 113 |
+| 数据 | articles **993** / analyses **980** / selected **173** / sources 9（2026-10-08 19:50 实测） |
+| CVE 索引 | 表 `cve_repos`：**5716 行 / 5165 个仓库 / 3055 个编号**，覆盖 2024-01~2026-10 |
 | 未做 | `npm test`（需独立测试库）、精选门槛校准、公众号接入 |
 
 `GITHUB_TOKEN` 不配也够用：8 个预置信源里只有 `json-ghsa-api`、`json-gh-new-cve-repos` 走 GitHub API，合计约 72 次/天，未认证额度（核心 60 次/小时、搜索 10 次/分钟，按 IP 算）够。服务器在共享 IP 后面、或要加更多 GitHub 信源时再配。
@@ -51,8 +53,8 @@
 
 按 `CVE- in:name,description created:>=N天前` 搜仓库，过滤 fork/归档/0 星和 `cve-list`/`awesome-cve`/`poc-in-github` 这类聚合仓库，并要求名字或描述里真的有 `CVE-YYYY-NNNN`。推送走 `POST /api/ingest/items`，50 条一批、7 秒间隔（接口限每分钟 10 次）。
 
-**已从「靠宿主机 cron 的脚本」改成模块 + 框架内置排程**：`sources.gh-poc-scan`，每 30 分钟（`*/30 * * * *`，Asia/Shanghai）由 worker 自己触发，结果进 `job_runs`、后台「运行」页可见。**不再需要任何宿主机计划任务。**
-`when: hasIngestToken` —— 没配 `INGEST_TOKEN` 时干脆不挂这个任务，免得每半小时往 `job_runs` 里堆一条失败记录。
+**已从「靠宿主机 cron 的脚本」改成模块 + 框架内置排程**：`sources.gh-poc-scan`，每小时整点（`0 * * * *`，Asia/Shanghai）由 worker 自己触发，结果进 `job_runs`、后台「运行」页可见。**不再需要任何宿主机计划任务。**
+`when: hasIngestToken` —— 没配 `INGEST_TOKEN` 时干脆不挂这个任务，免得每小时往 `job_runs` 里堆一条失败记录。
 `scripts/gh-poc-scan.ts` 只剩薄壳（逻辑在 `modules/gh-poc-scan/backend/index.ts`），留给试跑用。
 
 实测（2026-10-08，容器内）：近 2 天命中 198 个仓库 → 本页 100 个 → 过滤后 39 个 → 推送后新建 35 条。
@@ -151,12 +153,14 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-y
 - ✅ `node --experimental-strip-types scripts/check-cve-pack.ts` 全部通过（8 信源 / 6 类目 / 29 主题 / 28 份提示词 / 权重表和）
 - ✅ 18 个合并冲突全部解决，工作区干净
 - ✅ 全量核对：`Dockerfile` / `package.json` / `docker-compose.yml` / `.env.example` 与上游**无差异**；workspaces 已含 `modules/*`
-- ❌ 容器未重启、迁移未跑、**数据库未备份**（见 §8）
+- ✅ 容器已重启到 4.0.0、57 个迁移全部应用、`lb_*` / `monitor_*` / `fx_rates` 已删干净、站点 200、数据 993 条（2026-10-08 傍晚补做）
+- ⚠️ 数据库只做了**升级前**的一次手动 dump（`~/cvehot-2026-10-08.sql.gz`）；**自动备份仍未开**（见 §7 第 1 条）
 - ❌ `npm test` 仍未跑
+- ✅ `docker image prune -f` + `docker builder prune -f` 做过一次磁盘清理（镜像 39→12、回收约 4.1GB），清理后站点/容器/数据复核正常
 
 ## 6. 改东西前必读的机制
 
-- **要挂定时任务别用宿主机 cron**：框架自带排程（pg-boss，Asia/Shanghai）。做成模块，在它的 `server.ts` 里写 `schedules: [{ name, cron, run, missed, when }]`，在 `site/modules/server.ts` 登记，worker 启动时自动装上；结果进 `job_runs`、后台「运行」页可见。参考 `modules/cve-repo-index/`（每天 05:20 拉索引增量）和 `modules/gh-poc-scan/`（每 30 分钟扫新 PoC，带 `when` 条件开关）。
+- **要挂定时任务别用宿主机 cron**：框架自带排程（pg-boss，Asia/Shanghai）。做成模块，在它的 `server.ts` 里写 `schedules: [{ name, cron, run, missed, when }]`，在 `site/modules/server.ts` 登记，worker 启动时自动装上；结果进 `job_runs`、后台「运行」页可见。参考 `modules/cve-repo-index/`（每天 05:20 拉索引增量）和 `modules/gh-poc-scan/`（每小时扫新 PoC，带 `when` 条件开关）。
 - **2026-10-08 起分两个文件夹**：`industry/` 只放**行业知识**（`taxonomy.ts` / `topics.json` / `sources.json` / `prompts/` / `selection.ts`），`site/` 放**站点自己的东西**（`site.ts` / `models.ts` / `brand/` / `pages/` / `public/` / `changelog.json` / `modules/` 清单）。改信源、提示词、门槛、分类、站名、文案都不用动代码。提示词里的 `{{siteName}}`、`{{> 文件名}}` 是占位符。导入路径：`@aihot/industry/site` → **`@aihot/site`**。
 - **改 `industry/` 后必须 `docker compose up -d --build`**：代码和提示词是烤进镜像的，没有 bind mount，重启不生效。只改 `.env` 用 `docker compose up -d` 即可（compose 会自己重建容器）。
 - **分类 key 会进 URL**（`/all?category=…`、`/feed/category/<key>.xml`），上线后别改。
@@ -167,14 +171,23 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-y
 - **抓取频率**：短的 15 分钟，免费源最长 60 分钟，付费源 120–180 分钟。
 - **判重按规范化 URL**；热点按「独立来源数」算，同一家发十篇也只算一次。
 
+**备份现状（2026-10-08 19:40 盘点）：**
+
+- **代码**：git 够用 —— 本地完整历史 95 个提交，回退点 `5ff86e1` 一条 `git checkout` 可达。
+- **bundle**：`~/notes/` 里两条（升级前 8.4MB / 升级后 12MB）。**已实测**：从升级后那条里 `cat-file` 能取到 `5ff86e1`、祖先 17 个提交完整 → **升级前那条是纯冗余**。两条都已过时（15:42 之后又提交了 6 个），且与仓库同盘，**防不了磁盘故障**。
+- **数据库**：只有一份**升级前**的手动 dump `~/cvehot-2026-10-08.sql.gz`（8.6MB / 73 张表 / `gzip -t` 通过）。**那之后新增的数据零备份**，自动备份没开。
+
 ## 7. 待办
 
-1. **【最要紧】重启容器 + 跑迁移**。代码已是 4.0.0，容器还是旧镜像。⚠️ **迁移 `0053` 会 DROP 掉 `lb_*` / `monitor_*` / `fx_rates` 三张表**（上游 4.0.0 移除模型榜与 Codex 监控），而且 **`.env` 里没配 `DB_BACKUP_STORE_*`，自动备份是关的**，所以必须先手动 dump。完整顺序见 §8「升级 / 重启到 4.0.0」。
-2. **`npm test` 未跑**。类型错误已清（`ai-models`→`advisory`、`ai-products`→`poc`，40 处 / 28 文件；`category-corrections.test.ts` 里断言 `modelsReleased` 的用例已改写为断言 `exploited`），但 `tests/` 与 `apps/web/tests/` 里**还有 AI 行业的文案值**（`模型发布`、`itemType: "model_release"`、`"tip"`、`"drop"`、`"model"` 等）—— 它们不是类型错误，所以 typecheck 不报，**只有连上数据库跑一遍才知道哪些会失败**。按 `docs/customize.md`：把例子换成漏洞行业的对应项即可，规则本身不用改。跑测试需要一个库名以 `_test` 或 `_ci` 结尾的独立数据库。
-3. **门槛未校准**：T1 58 / T1_5 62 / T2 72 是起手值。做法：挑 100–200 条自己标「该选/不该选」写成 `.data/gold.jsonl`（格式见 `industry/gold.example.jsonl`）→ `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl` → 看后台 SelectBench 逐条复盘。判错重灾区通常是「厂商营销混在通告里」和「没有影响版本的传闻」。
-4. **待你决定的文案**：`routes/story.tsx` 与 `routes/item.tsx` 里的「AI 导读」「AI 综述」没改 —— 这两处说的是「模型生成的内容」，语义上是对的，要不要跟着变成「模型导读 / 模型综述」由你定。
-5. **CVE 仓库索引想加深历史**：现在是 2024 起、每月页数少（5716 行 / 3055 个编号）。要更全可跑 `--backfill --from-year 2020 --pages 5`（配了 `GITHUB_TOKEN` 才快）。
+1. **【最要紧】数据库没有自动备份**。`.env` 里没配 `DB_BACKUP_STORE_*`，框架自带的自动备份是关的。手上唯一一份是**升级前**的手动 dump（`~/cvehot-2026-10-08.sql.gz`，8.6MB / 73 张表 / `gzip -t` 通过），**那之后新增的数据（993 条 articles 加几天的分析、精选）零备份**。
+   —— **代码丢了能重建（git 在），数据库丢了就真没了。** 这是整套系统最脆的一环。做法：在 `.env` 里配 `DB_BACKUP_STORE_*`（对象存储），或退一步挂个宿主机 cron 定期 `pg_dump`。
+2. ~~重启容器 + 跑迁移~~ ✅ 已完成（2026-10-08 傍晚）：57 个迁移全部应用。**留一条给将来**：迁移 `0053` 会 DROP 掉 `lb_*` / `monitor_*` / `fx_rates` 三张表，所以**任何涉及迁移的停机，第一步永远是 `pg_dump`**。完整顺序见 §8「升级 / 重启到 4.0.0」。
+3. **`npm test` 未跑**。类型错误已清（`ai-models`→`advisory`、`ai-products`→`poc`，40 处 / 28 文件；`category-corrections.test.ts` 里断言 `modelsReleased` 的用例已改写为断言 `exploited`），但 `tests/` 与 `apps/web/tests/` 里**还有 AI 行业的文案值**（`模型发布`、`itemType: "model_release"`、`"tip"`、`"drop"`、`"model"` 等）—— 它们不是类型错误，所以 typecheck 不报，**只有连上数据库跑一遍才知道哪些会失败**。按 `docs/customize.md`：把例子换成漏洞行业的对应项即可，规则本身不用改。跑测试需要一个库名以 `_test` 或 `_ci` 结尾的独立数据库。
+4. **门槛未校准**：T1 58 / T1_5 62 / T2 72 是起手值。做法：挑 100–200 条自己标「该选/不该选」写成 `.data/gold.jsonl`（格式见 `industry/gold.example.jsonl`）→ `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl` → 看后台 SelectBench 逐条复盘。判错重灾区通常是「厂商营销混在通告里」和「没有影响版本的传闻」。
+5. **待你决定的文案**：`routes/story.tsx` 与 `routes/item.tsx` 里的「AI 导读」「AI 综述」没改 —— 这两处说的是「模型生成的内容」，语义上是对的，要不要跟着变成「模型导读 / 模型综述」由你定。
+6. **CVE 仓库索引想加深历史**：现在是 2024 起、每月页数少（5716 行 / 3055 个编号）。要更全可跑 `--backfill --from-year 2020 --pages 5`（配了 `GITHUB_TOKEN` 才快）。
 7. 可选：接入中文厂商通告信源；把索引做到网页上（现在只有 CLI，见 `docs/cve-pack.md`）。
+8. **磁盘**：2026-10-08 清过一次（回收约 4.1GB）。`docker system df` 仍显示 `RECLAIMABLE 4.889GB` —— 那是 10 个**有 tag 但没容器引用**的旧镜像（`mysql:8.0` / `9`、`nginx`、`tomcat:*`、`ubuntu`、`xwiki`、`teamssix/twiki`、`proxycat-proxycat`、`encrypt-labs-docker-php`），看着像以前几套实验环境。**别用 `docker image prune -a`**（会连它们一起干掉），要清先确认。
 
 ## 8. 常用命令
 
@@ -208,7 +221,7 @@ docker compose exec -T db psql -U aihot -d aihot -c \
   "SELECT source_id, status, new_count, started_at FROM fetch_runs ORDER BY id DESC LIMIT 10;"
 ```
 
-### 升级 / 重启到 4.0.0（还没做，顺序别改）
+### 升级 / 重启到 4.0.0（✅ 2026-10-08 已完成；下面的顺序留作同类操作模板，别改）
 
 ```bash
 cd /Users/star/notes/AIHOT
@@ -230,8 +243,20 @@ docker compose run --rm setup && docker compose up -d
 docker compose logs -f --tail 100 api worker web
 ```
 
-**回退**（出问题的话）：`git reset --hard 5ff86e1` 回到升级前，或从
-`~/notes/AIHOT-升级前备份-20261008.bundle` 重新 clone。数据库用第 1 步的 `.sql.gz` 恢复。
+**回退**（出问题的话）：`git reset --hard 5ff86e1` 回到升级前 —— **回退点就在本地 git 历史里，不用 bundle**。
+`~/notes/` 那两条 bundle 是当时的快照，**都已过时**（升级后那条停在 `9dd3b0b`，之后又提交了 6 个），且与仓库同盘、防不了磁盘故障。数据库用 `~/cvehot-2026-10-08.sql.gz` 恢复。
+
+### 磁盘清理（2026-10-08 做过一次）
+
+```bash
+docker system df                 # 先看，别急着删
+docker image prune -f            # 只删 <none> 空壳；⚠️ 别加 -a，那会连有 tag 的旧镜像一起删
+docker builder prune -f          # ⚠️ 清完下次 build 会从 33 秒回到几分钟（npm ci 层重跑）
+```
+
+2026-10-08 实测：镜像 39→12、构建缓存 3.086GB→322MB，回收约 4.1GB；数据卷与容器一个没动。
+⚠️ `docker image prune` 的汇总行会报 `Total reclaimed space: 0B`，**别被它骗了** —— 空壳与 `aihot-app:latest` 共享层，删的是引用不是空间。看 `docker system df` 前后对比才准。
+⚠️ **每次 `docker compose build` 会产生 4 个空壳**（compose 的 api/web/worker/setup 都打同一个 `aihot-app` 标签，先建好的被后面的顶掉）。
 
 ## 9. 给下一个 agent 的提醒
 
@@ -247,6 +272,7 @@ docker compose logs -f --tail 100 api worker web
 
 - **2026-09-30**：克隆仓库；通读 `industry/` 与采集器源码；实测一批 CVE 信源可达性；写出 CVE 行业包（信源/分类/主题/提示词/门槛）、PoC 扫描脚本、修掉框架里写死的 AI 文案；重新生成报头字；`npm run typecheck` 通过。
 - **2026-10-03**：`init-env` 生成 `.env`；`docker compose up -d --build` 起站；建 `gh-poc-scan` 源（editorial）并首次推送；端到端验证通过（9 个信源全 ok，148 条资料 / 113 条分析 / 19 条精选）；自检脚本落进仓库、补写本文档。
-- **2026-10-08**：先把 31 个未提交改动收成基线提交 `5ff86e1`（并设了仓库级 git 身份，原来是空的）；`git fetch --unshallow` 拿到完整历史；合并上游 69 个提交（`6e67a9d9`），18 个冲突全部解决；**发现并恢复被静默覆盖的 CVEHOT 报头字**；把站点身份全部搬到 `site/site.ts`；把报眼指标「条在野利用」在 4.0.0 新架构里接回；提示词按「上游新版 + 追加 CVE 规则」合；tests 夹具类目改 40 处。`main` = `9dd3b0b`。`npm run typecheck` 七工程全过、行业包自检全过。**容器尚未重启，迁移与数据库备份待做**（见 §7 第 1 条、§8）。
+- **2026-10-08**：先把 31 个未提交改动收成基线提交 `5ff86e1`（并设了仓库级 git 身份，原来是空的）；`git fetch --unshallow` 拿到完整历史；合并上游 69 个提交（`6e67a9d9`），18 个冲突全部解决；**发现并恢复被静默覆盖的 CVEHOT 报头字**；把站点身份全部搬到 `site/site.ts`；把报眼指标「条在野利用」在 4.0.0 新架构里接回；提示词按「上游新版 + 追加 CVE 规则」合；tests 夹具类目改 40 处。`main` = `9dd3b0b`。`npm run typecheck` 七工程全过、行业包自检全过。当天上午的状态是**容器尚未重启、迁移与数据库备份待做** —— 傍晚全部补做，见下条。
 - **2026-10-08（傍晚）**：他重启容器到 4.0.0，验证通过——57 个迁移全部应用、`lb_*`/`monitor_*`/`fx_rates` 已删、站点 200、数据 958 条。随后按 buaq.net/cve 的思路做出 **CVE 仓库索引旁路**（`scripts/cve-repo-index.ts` + 迁移 `0900_cve_repos.sql`，`--live` 实测返回 `total_count = 9`）。他把 `GITHUB_TOKEN` 配好并自己跑完背填（5716 行 / 5165 仓库 / 3055 编号，覆盖 2024-01~2026-10）。**随后把索引做成模块 `modules/cve-repo-index/`**，用框架内置排程注册 `cve.repo-index`（每天 05:20 Asia/Shanghai）——日常维护不再需要宿主机 cron。`pgboss.schedule` 已见 `cron.cve.repo-index`，typecheck 七工程全过。
-- **2026-10-08（晚）**：把 `gh-poc-scan` 也搬成模块 `modules/gh-poc-scan/`，排程 `sources.gh-poc-scan`（每 30 分钟，`when` 看 `INGEST_TOKEN`）。**至此两个原先要靠宿主机 cron 的活儿都进了框架排程。** 实测容器内推送：39 条提交 / 35 条新建；`pgboss.schedule` 已见 `cron.sources.gh-poc-scan | */30 * * * *`。
+- **2026-10-08（晚）**：把 `gh-poc-scan` 也搬成模块 `modules/gh-poc-scan/`，排程 `sources.gh-poc-scan`（`when` 看 `INGEST_TOKEN`）。**至此两个原先要靠宿主机 cron 的活儿都进了框架排程。** 实测容器内推送：39 条提交 / 35 条新建。**频率随后从 30 分钟降到每小时整点** —— 该源只有 10-03 / 10-08 两天有产出、且是爆发式，而每跑一次都要打 GitHub 搜索口并处理 100 条（多数按 URL 判重丢弃），30 分钟纯属白烧；改 `0 * * * *` 与站内信源的 60 分钟档对齐。
+- **2026-10-08（19:30~19:50）**：Docker 磁盘清理 —— `docker image prune -f` + `docker builder prune -f`，镜像 39→12、构建缓存 3.086GB→322MB、**回收约 4.1GB**；`aihot_db` / `aihot_data` 卷与所有容器一个没动。同时盘点备份现状：**实测**从「升级后」bundle 里能取到 `5ff86e1`（祖先 17 个提交完整）→ **「升级前」那条 bundle 是纯冗余**；数据库仍**没有自动备份**（`DB_BACKUP_STORE_*` 未配），这是当前最脆的一环。
