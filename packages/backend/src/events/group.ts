@@ -379,7 +379,10 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
     const late = await sql.begin(async (tx) => {
       await lockCurrentRevision(tx, articleId, a.revision);
       const manual = await manualDecision(tx, articleId);
-      if (manual) return manual;
+      if (manual) {
+        if (receiptId !== null) await completeReceipt(tx, receiptId);
+        return manual;
+      }
       for (const c of cands) {
         const v = verdicts.get(c.factId);
         if (v && v.relation !== "UNRELATED" && v.confidence >= TIE_MIN_CONFIDENCE) {
@@ -389,9 +392,9 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
       }
       await recordDecision(tx, articleId, null, null, "roundup", cands.map((c) => ({ id: c.factId, score: c.score, ...verdicts.get(c.factId) })), receiptId);
       await markGrouped(articleId, a.revision, selection, tx);
+      if (receiptId !== null) await completeReceipt(tx, receiptId);
       return null;
     });
-    if (receiptId !== null) await completeReceipt(sql, receiptId);
     // A newly identified composite may have supplied an older digest. Rebuild its former stories
     // from their remaining reports, without redirecting an emptied story into an unrelated one.
     for (const id of left) await enqueue(QUEUES.digest, { storyId: id }, { singletonKey: `story:${id}` });
@@ -406,9 +409,9 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
       await markGrouped(articleId, a.revision, manual ? { addsValue: true, reason: "人工确认的归属" } : selection, tx);
       if (!manual) await recordDecision(tx, articleId, kept.factId, kept.storyId, "kept",
         cands.map(c => ({ id: c.factId, score: c.score, ...verdicts.get(c.factId) })), receipts[0] ?? null);
+      for (const receiptId of receipts) await completeReceipt(tx, receiptId);
       return manual;
     });
-    for (const receiptId of receipts) await completeReceipt(sql, receiptId);
     return late ? { verdict: "manual", factId: late.factId } : { verdict: "kept", factId: kept.factId, storyId: kept.storyId };
   }
   let verdict: GroupResult["verdict"] = "new-story";
@@ -469,6 +472,7 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
     const late = await manualDecision(tx, articleId);
     if (late) {
       await markGrouped(articleId, a.revision, { addsValue: true, reason: "人工确认的归属" }, tx);
+      for (const id of receipts) await completeReceipt(tx, id);
       return { manual: late, factId: null, storyId: null };
     }
     if (storyId !== null) {
@@ -484,9 +488,9 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
     await recordSignal(tx, story, articleId, source, "editorial", observedAt);
     await recordDecision(tx, articleId, fact, story, verdict, decisionCandidates, receipts[0] ?? null);
     await markGrouped(articleId, a.revision, selection, tx);
+    for (const id of receipts) await completeReceipt(tx, id);
     return { manual: null, factId: fact, storyId: story };
   });
-  for (const id of receipts) await completeReceipt(sql, id);
   if (written.manual) return { verdict: "manual", factId: written.manual.factId };
   const result: GroupResult = { verdict, factId: written.factId!, storyId: written.storyId! };
 
