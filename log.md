@@ -47,11 +47,16 @@
 | ~~`features.ts`~~ | **已随上游 4.0.0 删除**（模型榜与 Codex 重置监控整体移出框架） |
 | `brand/nameplates/*.svg` → **现在在 `site/brand/nameplates/`** | 用新行业词重新生成（现在显示「漏洞日报」）。⚠️ 2026-10-08 合并时**被上游版本静默覆盖过一次**，已恢复，见 §9 |
 
-### b. GitHub PoC 扫描脚本
+### b. GitHub PoC 扫描（模块 `modules/gh-poc-scan/`）
 
-[`scripts/gh-poc-scan.ts`](scripts/gh-poc-scan.ts)，零依赖。按 `CVE- in:name,description created:>=N天前` 搜仓库，过滤 fork/归档/0 星和 `cve-list`/`awesome-cve`/`poc-in-github` 这类聚合仓库，并要求名字或描述里真的有 `CVE-YYYY-NNNN`。推送走 `POST /api/ingest/items`，50 条一批、7 秒间隔（接口限每分钟 10 次）。
+按 `CVE- in:name,description created:>=N天前` 搜仓库，过滤 fork/归档/0 星和 `cve-list`/`awesome-cve`/`poc-in-github` 这类聚合仓库，并要求名字或描述里真的有 `CVE-YYYY-NNNN`。推送走 `POST /api/ingest/items`，50 条一批、7 秒间隔（接口限每分钟 10 次）。
 
-实测：近 3 天搜索命中 333 个仓库 → 首页 100 个 → 过滤后 35 个，留下的都是真实 PoC。**不做过滤会灌进大量噪声**（`cvent`、`collectors-no-cve-xxx`）。
+**已从「靠宿主机 cron 的脚本」改成模块 + 框架内置排程**：`sources.gh-poc-scan`，每 30 分钟（`*/30 * * * *`，Asia/Shanghai）由 worker 自己触发，结果进 `job_runs`、后台「运行」页可见。**不再需要任何宿主机计划任务。**
+`when: hasIngestToken` —— 没配 `INGEST_TOKEN` 时干脆不挂这个任务，免得每半小时往 `job_runs` 里堆一条失败记录。
+`scripts/gh-poc-scan.ts` 只剩薄壳（逻辑在 `modules/gh-poc-scan/backend/index.ts`），留给试跑用。
+
+实测（2026-10-08，容器内）：近 2 天命中 198 个仓库 → 本页 100 个 → 过滤后 39 个 → 推送后新建 35 条。
+**不做过滤会灌进大量噪声**（`cvent`、`collectors-no-cve-xxx`）。
 
 ### c. 框架里写死的 AI 文案（已被上游配置化，本表作废）
 
@@ -151,7 +156,7 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-y
 
 ## 6. 改东西前必读的机制
 
-- **要挂定时任务别用宿主机 cron**：框架自带排程（pg-boss，Asia/Shanghai）。做成模块，在它的 `server.ts` 里写 `schedules: [{ name, cron, run, missed, when }]`，在 `site/modules/server.ts` 登记，worker 启动时自动装上；结果进 `job_runs`、后台「运行」页可见。参考 `modules/cve-repo-index/`。**`gh-poc-scan` 也属于这一类（现在还是靠外部 cron），可以照这个模式搬进来。**
+- **要挂定时任务别用宿主机 cron**：框架自带排程（pg-boss，Asia/Shanghai）。做成模块，在它的 `server.ts` 里写 `schedules: [{ name, cron, run, missed, when }]`，在 `site/modules/server.ts` 登记，worker 启动时自动装上；结果进 `job_runs`、后台「运行」页可见。参考 `modules/cve-repo-index/`（每天 05:20 拉索引增量）和 `modules/gh-poc-scan/`（每 30 分钟扫新 PoC，带 `when` 条件开关）。
 - **2026-10-08 起分两个文件夹**：`industry/` 只放**行业知识**（`taxonomy.ts` / `topics.json` / `sources.json` / `prompts/` / `selection.ts`），`site/` 放**站点自己的东西**（`site.ts` / `models.ts` / `brand/` / `pages/` / `public/` / `changelog.json` / `modules/` 清单）。改信源、提示词、门槛、分类、站名、文案都不用动代码。提示词里的 `{{siteName}}`、`{{> 文件名}}` 是占位符。导入路径：`@aihot/industry/site` → **`@aihot/site`**。
 - **改 `industry/` 后必须 `docker compose up -d --build`**：代码和提示词是烤进镜像的，没有 bind mount，重启不生效。只改 `.env` 用 `docker compose up -d` 即可（compose 会自己重建容器）。
 - **分类 key 会进 URL**（`/all?category=…`、`/feed/category/<key>.xml`），上线后别改。
@@ -168,8 +173,7 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-y
 2. **`npm test` 未跑**。类型错误已清（`ai-models`→`advisory`、`ai-products`→`poc`，40 处 / 28 文件；`category-corrections.test.ts` 里断言 `modelsReleased` 的用例已改写为断言 `exploited`），但 `tests/` 与 `apps/web/tests/` 里**还有 AI 行业的文案值**（`模型发布`、`itemType: "model_release"`、`"tip"`、`"drop"`、`"model"` 等）—— 它们不是类型错误，所以 typecheck 不报，**只有连上数据库跑一遍才知道哪些会失败**。按 `docs/customize.md`：把例子换成漏洞行业的对应项即可，规则本身不用改。跑测试需要一个库名以 `_test` 或 `_ci` 结尾的独立数据库。
 3. **门槛未校准**：T1 58 / T1_5 62 / T2 72 是起手值。做法：挑 100–200 条自己标「该选/不该选」写成 `.data/gold.jsonl`（格式见 `industry/gold.example.jsonl`）→ `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl` → 看后台 SelectBench 逐条复盘。判错重灾区通常是「厂商营销混在通告里」和「没有影响版本的传闻」。
 4. **待你决定的文案**：`routes/story.tsx` 与 `routes/item.tsx` 里的「AI 导读」「AI 综述」没改 —— 这两处说的是「模型生成的内容」，语义上是对的，要不要跟着变成「模型导读 / 模型综述」由你定。
-5. **`gh-poc-scan` 还没自动化**：它仍是靠外部 cron 推 `/api/ingest/items`。可以照 `modules/cve-repo-index/` 的样子做成模块 + 内置排程（`cron: "*/30 * * * *"`），就不用管宿主机 cron 了。
-6. **CVE 仓库索引想加深历史**：现在是 2024 起、每月页数少（5716 行 / 3055 个编号）。要更全可跑 `--backfill --from-year 2020 --pages 5`（配了 `GITHUB_TOKEN` 才快）。
+5. **CVE 仓库索引想加深历史**：现在是 2024 起、每月页数少（5716 行 / 3055 个编号）。要更全可跑 `--backfill --from-year 2020 --pages 5`（配了 `GITHUB_TOKEN` 才快）。
 7. 可选：接入中文厂商通告信源；把索引做到网页上（现在只有 CLI，见 `docs/cve-pack.md`）。
 
 ## 8. 常用命令

@@ -1,0 +1,11 @@
+{
+  "name": "@aihot/gh-poc-scan",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./module": "./module.ts",
+    "./server": "./server.ts",
+    "./backend": "./backend/index.ts"
+  }
+}

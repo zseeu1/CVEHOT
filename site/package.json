@@ -13,6 +13,7 @@
     "./brand/*": "./brand/*"
   },
   "dependencies": {
-    "@aihot/cve-repo-index": "*"
+    "@aihot/cve-repo-index": "*",
+    "@aihot/gh-poc-scan": "*"
   }
 }

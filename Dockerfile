@@ -18,6 +18,7 @@ COPY packages/contracts/package.json packages/contracts/
 COPY industry/package.json industry/
 COPY site/package.json site/
 COPY modules/cve-repo-index/package.json modules/cve-repo-index/
+COPY modules/gh-poc-scan/package.json modules/gh-poc-scan/
 RUN npm ci --no-audit --no-fund ${NPM_REGISTRY:+--registry=$NPM_REGISTRY}
 COPY . .
 RUN npm run build -w @aihot/web && npm prune --omit=dev --no-audit --no-fund
