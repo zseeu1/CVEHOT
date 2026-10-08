@@ -69,18 +69,27 @@
 
 ### d. 新增：GitHub CVE 仓库索引（学自 buaq.net/cve）
 
-`scripts/cve-repo-index.ts` + 表 `cve_repos`（`database/migrations/0900_cve_repos.sql`，编号取 0900 远离上游序列防撞号）。
+**已做成模块**：`modules/cve-repo-index/`（`module.ts` / `server.ts` / `backend/index.ts`），在 `site/modules/{index,server}.ts` 三份清单里登记，表 `cve_repos`（`database/migrations/0900_cve_repos.sql`，编号取 0900 远离上游序列防撞号）。
+`scripts/cve-repo-index.ts` 只剩一个薄壳（逻辑在模块里）。
+
+**日常维护是自动的**——模块用**框架内置的排程**注册了 `cve.repo-index`，每天 05:20（Asia/Shanghai）由 worker 自己拉增量，
+**不需要宿主机 cron / launchd**，也不需要手动跑。执行结果记进 `job_runs`，后台「运行」页可见；`missed: "once"` 保证停机错过时点后补跑。
+
+```sql
+-- 看排程挂上没有（应有一行 cron.cve.repo-index）
+SELECT name, cron, timezone FROM pgboss.schedule WHERE name LIKE '%cve%';
+```
 
 补的是**历史纵深**：`gh-poc-scan.ts` 和 `json-gh-new-cve-repos` 都只看最近几天新出现的仓库，回答不了
 「CVE-2026-21589 到现在一共有多少个 PoC」。这个旁路把 GitHub 搜索语料收进自己的表，
 按编号查得到一个明确数字；**不进任何流水线、零模型调用**。
 
 ```bash
+# 只在这三种场合手动跑（日常增量已经自动）
 docker compose exec -T worker node scripts/cve-repo-index.ts --lookup CVE-2026-21589 --live  # 实时权威数量
 docker compose exec -T worker node scripts/cve-repo-index.ts --lookup CVE-2026-21589        # 查索引（不联网）
-docker compose exec -T worker node scripts/cve-repo-index.ts --days 3                        # 每日增量
-docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-year 2024 --pages 3
-docker compose exec -T worker node scripts/cve-repo-index.ts --stats
+docker compose exec -T worker node scripts/cve-repo-index.ts --stats                          # 看覆盖情况
+docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-year 2020 --pages 5  # 想加深历史才跑
 ```
 
 实测：`--lookup CVE-2026-21589 --live` → `total_count = 9`（Atlassian DC 越权读，2026-10-07 起陆续出现）。
@@ -142,6 +151,7 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --stats
 
 ## 6. 改东西前必读的机制
 
+- **要挂定时任务别用宿主机 cron**：框架自带排程（pg-boss，Asia/Shanghai）。做成模块，在它的 `server.ts` 里写 `schedules: [{ name, cron, run, missed, when }]`，在 `site/modules/server.ts` 登记，worker 启动时自动装上；结果进 `job_runs`、后台「运行」页可见。参考 `modules/cve-repo-index/`。**`gh-poc-scan` 也属于这一类（现在还是靠外部 cron），可以照这个模式搬进来。**
 - **2026-10-08 起分两个文件夹**：`industry/` 只放**行业知识**（`taxonomy.ts` / `topics.json` / `sources.json` / `prompts/` / `selection.ts`），`site/` 放**站点自己的东西**（`site.ts` / `models.ts` / `brand/` / `pages/` / `public/` / `changelog.json` / `modules/` 清单）。改信源、提示词、门槛、分类、站名、文案都不用动代码。提示词里的 `{{siteName}}`、`{{> 文件名}}` 是占位符。导入路径：`@aihot/industry/site` → **`@aihot/site`**。
 - **改 `industry/` 后必须 `docker compose up -d --build`**：代码和提示词是烤进镜像的，没有 bind mount，重启不生效。只改 `.env` 用 `docker compose up -d` 即可（compose 会自己重建容器）。
 - **分类 key 会进 URL**（`/all?category=…`、`/feed/category/<key>.xml`），上线后别改。
@@ -158,8 +168,8 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --stats
 2. **`npm test` 未跑**。类型错误已清（`ai-models`→`advisory`、`ai-products`→`poc`，40 处 / 28 文件；`category-corrections.test.ts` 里断言 `modelsReleased` 的用例已改写为断言 `exploited`），但 `tests/` 与 `apps/web/tests/` 里**还有 AI 行业的文案值**（`模型发布`、`itemType: "model_release"`、`"tip"`、`"drop"`、`"model"` 等）—— 它们不是类型错误，所以 typecheck 不报，**只有连上数据库跑一遍才知道哪些会失败**。按 `docs/customize.md`：把例子换成漏洞行业的对应项即可，规则本身不用改。跑测试需要一个库名以 `_test` 或 `_ci` 结尾的独立数据库。
 3. **门槛未校准**：T1 58 / T1_5 62 / T2 72 是起手值。做法：挑 100–200 条自己标「该选/不该选」写成 `.data/gold.jsonl`（格式见 `industry/gold.example.jsonl`）→ `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl` → 看后台 SelectBench 逐条复盘。判错重灾区通常是「厂商营销混在通告里」和「没有影响版本的传闻」。
 4. **待你决定的文案**：`routes/story.tsx` 与 `routes/item.tsx` 里的「AI 导读」「AI 综述」没改 —— 这两处说的是「模型生成的内容」，语义上是对的，要不要跟着变成「模型导读 / 模型综述」由你定。
-5. **CVE 仓库索引还没背填**：表已建、脚本可用（实测通过），但库里目前只有试跑的 42 行。背填前**先配 `GITHUB_TOKEN`**（背填与站点信源共用未认证的 10 次/分钟搜索额度，不配会把信源挤掉）。建议：`--backfill --from-year 2024 --pages 3`，之后 cron 每天跑一次 `--days 3`。
-6. 给 `gh-poc-scan` 挂 cron（建议 30–60 分钟一次）。
+5. **`gh-poc-scan` 还没自动化**：它仍是靠外部 cron 推 `/api/ingest/items`。可以照 `modules/cve-repo-index/` 的样子做成模块 + 内置排程（`cron: "*/30 * * * *"`），就不用管宿主机 cron 了。
+6. **CVE 仓库索引想加深历史**：现在是 2024 起、每月页数少（5716 行 / 3055 个编号）。要更全可跑 `--backfill --from-year 2020 --pages 5`（配了 `GITHUB_TOKEN` 才快）。
 7. 可选：接入中文厂商通告信源；把索引做到网页上（现在只有 CLI，见 `docs/cve-pack.md`）。
 
 ## 8. 常用命令
@@ -234,4 +244,4 @@ docker compose logs -f --tail 100 api worker web
 - **2026-09-30**：克隆仓库；通读 `industry/` 与采集器源码；实测一批 CVE 信源可达性；写出 CVE 行业包（信源/分类/主题/提示词/门槛）、PoC 扫描脚本、修掉框架里写死的 AI 文案；重新生成报头字；`npm run typecheck` 通过。
 - **2026-10-03**：`init-env` 生成 `.env`；`docker compose up -d --build` 起站；建 `gh-poc-scan` 源（editorial）并首次推送；端到端验证通过（9 个信源全 ok，148 条资料 / 113 条分析 / 19 条精选）；自检脚本落进仓库、补写本文档。
 - **2026-10-08**：先把 31 个未提交改动收成基线提交 `5ff86e1`（并设了仓库级 git 身份，原来是空的）；`git fetch --unshallow` 拿到完整历史；合并上游 69 个提交（`6e67a9d9`），18 个冲突全部解决；**发现并恢复被静默覆盖的 CVEHOT 报头字**；把站点身份全部搬到 `site/site.ts`；把报眼指标「条在野利用」在 4.0.0 新架构里接回；提示词按「上游新版 + 追加 CVE 规则」合；tests 夹具类目改 40 处。`main` = `9dd3b0b`。`npm run typecheck` 七工程全过、行业包自检全过。**容器尚未重启，迁移与数据库备份待做**（见 §7 第 1 条、§8）。
-- **2026-10-08（傍晚）**：他重启容器到 4.0.0，验证通过——57 个迁移全部应用、`lb_*`/`monitor_*`/`fx_rates` 已删、站点 200、数据 958 条。随后按 buaq.net/cve 的思路做出 **CVE 仓库索引旁路**（`scripts/cve-repo-index.ts` + 迁移 `0900_cve_repos.sql`，`--live` 实测返回 `total_count = 9`）。表已建、脚本已进镜像；**历史背填未做**（要先配 `GITHUB_TOKEN`，见 §7 第 5 条）。
+- **2026-10-08（傍晚）**：他重启容器到 4.0.0，验证通过——57 个迁移全部应用、`lb_*`/`monitor_*`/`fx_rates` 已删、站点 200、数据 958 条。随后按 buaq.net/cve 的思路做出 **CVE 仓库索引旁路**（`scripts/cve-repo-index.ts` + 迁移 `0900_cve_repos.sql`，`--live` 实测返回 `total_count = 9`）。他把 `GITHUB_TOKEN` 配好并自己跑完背填（5716 行 / 5165 仓库 / 3055 编号，覆盖 2024-01~2026-10）。**随后把索引做成模块 `modules/cve-repo-index/`**，用框架内置排程注册 `cve.repo-index`（每天 05:20 Asia/Shanghai）——日常维护不再需要宿主机 cron。`pgboss.schedule` 已见 `cron.cve.repo-index`，typecheck 七工程全过。
