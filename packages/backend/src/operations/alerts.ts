@@ -6,7 +6,7 @@
 // A site's responder (modules.ts) filters findings for the owner, preserving repeat and recovery
 // tracking for messages it returns and replacing the default digest policy.
 // Delivery goes through sendAlert (ops chat, internal-chat fallback; off unless FEISHU_INTERNAL_ENABLED).
-import { beijingAt, beijingDate } from "@aihot/contracts/time";
+import { addDays, beijingAt, beijingDate, isValidDate } from "@aihot/contracts/time";
 import { ALERTS, EDITION_TIMES } from "@aihot/site";
 import { sql } from "../db.ts";
 import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
@@ -97,22 +97,7 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
         since: p!.waiting >= 10 && p!.oldest ? p!.oldest : undefined,
       });
     }
-    // The daily report is composed from its edition time, and tried again every half hour until it exists:
-    // two hours later it is overdue.
-    if (now >= beijingAt(beijingDate(now), EDITION_TIMES.daily).getTime() + 2 * 3600_000) {
-      const [r] = await sql`SELECT 1 FROM reports WHERE kind = 'daily' AND key = ${beijingDate(now)}`;
-      if (!r) {
-        out.push({
-          key: "report.daily",
-          level: "now",
-          title: "今天的日报还没生成",
-          impact: "读者看不到今天的日报",
-          heals: "系统每半小时补做一次，到现在还没成功",
-          action: "尽快发起一次维护处理",
-          detail: `reports daily ${beijingDate(now)} 不存在；看 reports.compose 的运行记录`,
-        });
-      }
-    }
+    out.push(...await dailyReportFindings(now));
   }
 
   // Money, and things only the owner can do
@@ -298,6 +283,49 @@ interface AlertState {
   [key: string]: { title: string; since: string; sentAt: string };
 }
 
+const DAILY_PREFIX = "report.daily:";
+const dailyDate = (key: string) => key.startsWith(DAILY_PREFIX) && isValidDate(key.slice(DAILY_PREFIX.length))
+  ? key.slice(DAILY_PREFIX.length) : undefined;
+
+async function alertState(): Promise<AlertState> {
+  const [row] = await sql<{ value: AlertState }[]>`SELECT value FROM settings WHERE key = 'alerts.state'`;
+  const state = { ...(row?.value ?? {}) };
+  // The old shared key recorded its first alert date in since. Keep its reminder timing on upgrade.
+  const legacy = state["report.daily"];
+  if (legacy && Number.isFinite(Date.parse(legacy.since))) {
+    const date = beijingDate(legacy.since);
+    state[`${DAILY_PREFIX}${date}`] ??= { ...legacy, title: `${date} 的日报还没生成` };
+    delete state["report.daily"];
+  }
+  return state;
+}
+
+async function dailyReportFindings(now: number): Promise<Finding[]> {
+  const today = beijingDate(now);
+  const state = await alertState();
+  const [activity] = await sql<{ first_report: string | null; first_attempt: Date | null }[]>`
+    SELECT (SELECT min(key) FROM reports WHERE kind = 'daily') AS first_report,
+           (SELECT min(started_at) FROM job_runs WHERE job = 'reports.compose') AS first_attempt`;
+  const starts = [activity?.first_report, activity?.first_attempt && beijingDate(activity.first_attempt)]
+    .filter((date): date is string => !!date && isValidDate(date)).sort();
+  const start = starts[0] ?? today;
+  // Bound new gap discovery, but never expire an already announced missing edition.
+  const dates = new Set(Object.keys(state).map(dailyDate).filter((date): date is string => !!date));
+  for (let date = addDays(today, -6); date <= today; date = addDays(date, 1)) {
+    if (date >= start) dates.add(date);
+  }
+  const overdue = [...dates].filter(date => now >= beijingAt(date, EDITION_TIMES.daily).getTime() + 2 * 3600_000).sort();
+  if (!overdue.length) return [];
+  const published = new Set((await sql<{ key: string }[]>`SELECT key FROM reports WHERE kind = 'daily' AND key IN ${sql(overdue)}`).map(r => r.key));
+  return overdue.filter(date => !published.has(date)).map(date => ({
+    key: `${DAILY_PREFIX}${date}`, level: "now",
+    title: `${date} 的日报还没生成`, impact: `读者看不到 ${date} 的日报`,
+    heals: "尚未补齐；需查看运行记录确认是否需要人工补做",
+    action: "尽快发起一次维护处理",
+    detail: `reports daily ${date} 不存在；看 reports.compose 的运行记录`,
+  }));
+}
+
 /**
  * Every 10 minutes: new problems and recoveries of the now/today levels go out; follow-ups wait for 09:00.
  * With a responder, only what it hands back goes out, and what it still holds is not reported as recovered.
@@ -307,8 +335,7 @@ export async function checkAlerts(now = Date.now()) {
   const r = responder();
   const { tell, held } = r ? await r.take(all, now) : { tell: all, held: [] as string[] };
   const found = tell.filter((f) => f.level !== "later");
-  const [row] = await sql<{ value: AlertState }[]>`SELECT value FROM settings WHERE key = 'alerts.state'`;
-  const state: AlertState = { ...(row?.value ?? {}) };
+  const state = await alertState();
   const sent: string[] = [];
   for (const f of found) {
     const open = state[f.key];
@@ -321,6 +348,12 @@ export async function checkAlerts(now = Date.now()) {
   }
   for (const [key, open] of Object.entries(state)) {
     if (found.some((f) => f.key === key) || held.includes(key)) continue;
+    // Suppressed findings (valves, startup grace or responder policy) are not evidence of recovery.
+    const date = dailyDate(key);
+    if (date) {
+      const [report] = await sql`SELECT 1 FROM reports WHERE kind = 'daily' AND key = ${date}`;
+      if (!report) continue;
+    }
     const msg = formatRecovery(open.title, new Date(open.since), now);
     await sendAlert(msg.title, msg.lines);
     sent.push(`${key}:recovered`);
