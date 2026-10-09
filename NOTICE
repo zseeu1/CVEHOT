@@ -10,3 +10,23 @@ This repository also contains third-party material under its own terms:
 
 The demo sources in industry/sources.json are public feeds of their publishers. Their content belongs
 to them; by default the site shows only a summary and a link to the original.
+
+---
+
+CVEHOT — a rework of AIHOT
+
+This repository is an independent derivative work of AIHOT (https://github.com/KKKKhazix/AIHOT).
+The engine, the site framework, the selection and clustering pipeline and the public interfaces are
+upstream code, used under the MIT License with the original copyright notice retained
+(LICENSE, Copyright (c) 2026 数字生命卡兹克).
+
+What this repository changed: the industry pack only — sources, categories, topics, prompts, selection
+thresholds, site copy, and the site's own brand assets (site/brand/), plus two modules under modules/.
+See README.md for the list.
+
+The AIHOT name and logo are not used here, as the upstream notice above requires. This site's name is
+CVEHOT and its icons are its own.
+
+The feeds configured in industry/sources.json (GitHub Security Advisories, cvelistV5, CISA KEV, the
+OpenSSF malicious-packages dataset and others) are public feeds of their publishers. Their content
+belongs to them; the site shows only a summary and a link to the original.
