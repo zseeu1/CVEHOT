@@ -86,3 +86,14 @@ test("empty older gaps cannot starve a later daily, weekly or monthly, and failu
     assert.ok(await report(kind!, key!), `${kind} ${key} was recovered past the empty gaps`);
   }
 });
+
+test("a week or month that ended before the first daily is not due, so a site started mid-month runs clean", async () => {
+  // The site's first daily is Monday 2024-02-05: the weeks and the month 2024-01 before it have no daily to sum up.
+  const first = await item("2024-02-05");
+  await sql`INSERT INTO reports (kind, key, window_start, window_end, content, generated_at)
+    VALUES ('daily', '2024-02-05', now(), now(), ${sql.json({ sections: [{ label: "行业动态", items: [{ itemId: first, title: first }] }] })}, now())`;
+  const { generated, failed } = await composeDueReports(editionAt("daily", "2024-02-05", 3600));
+  assert.deepEqual([generated, failed], [[], []]);
+  assert.equal(await report("weekly", "2024-W05"), undefined);
+  assert.equal(await report("monthly", "2024-01"), undefined);
+});
