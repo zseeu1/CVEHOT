@@ -90,7 +90,7 @@ export default function MorePage() {
               <IconPalette size={20} />
             </span>
             <span className="flex-1">主题色</span>
-            <AccentSwitch />
+            <AccentSwitch className="w-[158px] shrink-0" />
           </li>
         </Group>
         <Group title="工具与入口">

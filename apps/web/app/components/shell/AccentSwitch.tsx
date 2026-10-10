@@ -11,9 +11,9 @@ const LABELS: Record<Accent, string> = {
 
 /**
  * Theme-colour picker: one dot per palette, each filled with that palette's own accent. The dot reads
- * `<html data-accent>`'s colour through a `data-accent` of its own, so a swatch is always the exact
- * colour it would put on the page, in whichever theme is showing. The default needs no rule of its
- * own — it is the accent the stylesheet already carries.
+ * the colour through a `data-accent` of its own, so a swatch always shows the exact colour it would
+ * put on the page, in whichever theme is showing. The default needs no rule of its own — it is the
+ * accent the stylesheet already carries. Shaped like the appearance switch it sits above.
  */
 export function AccentSwitch({ className = "" }: { className?: string }) {
   const accent = useAccentPreference();
@@ -27,7 +27,7 @@ export function AccentSwitch({ className = "" }: { className?: string }) {
   };
 
   return (
-    <div role="radiogroup" aria-label="主题色" className={`flex items-center gap-0.5 ${className}`}>
+    <div role="radiogroup" aria-label="主题色" className={`grid h-[34px] grid-cols-5 rounded-full border border-line bg-bg-sunk p-[3px] ${className}`}>
       {ACCENTS.map((a) => (
         <button
           key={a}
@@ -36,8 +36,8 @@ export function AccentSwitch({ className = "" }: { className?: string }) {
           aria-checked={current === a}
           title={LABELS[a]}
           onClick={() => choose(a)}
-          className={`flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors duration-150 ${
-            current === a ? "border-line-strong" : "border-transparent hover:border-line"
+          className={`flex items-center justify-center rounded-full transition-colors duration-150 ${
+            current === a ? "border border-line bg-surface shadow-[var(--shadow-card)]" : "border border-transparent"
           }`}
         >
           <span data-accent={a} aria-hidden="true" className="size-3.5 rounded-full ring-1 ring-black/10 ring-inset" style={{ background: "var(--accent)" }} />
