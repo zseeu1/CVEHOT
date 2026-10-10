@@ -37,17 +37,25 @@
 
 ## 看一眼
 
-<img src="docs/assets/shot-home.png" alt="精选：漏洞通告、PoC 复现、在野利用、供应链分开展示" width="100%">
+深浅两套主题都有，切换在侧边栏底部（桌面端）和「我的」页（手机端），主题色另有一套色板可选。
 
 <p align="center"><sub>精选：把漏洞通告、PoC 复现、在野利用、供应链分开摆，同一条漏洞的多方来源归在一个事件下。</sub></p>
 
-<img src="docs/assets/shot-daily.png" alt="漏洞日报：头条、今日看点与当天指标" width="100%">
+| 深色 | 浅色 |
+| --- | --- |
+| ![精选（深色）](docs/assets/shot-home-dark.png) | ![精选（浅色）](docs/assets/shot-home-light.png) |
 
 <p align="center"><sub>漏洞日报：每天一条头条加几条看点，报眼是当天的事数量、来源数和一手发布数。</sub></p>
 
-<img src="docs/assets/shot-hot.png" alt="漏洞热点榜：按独立来源数排的热度与 24 小时趋势" width="100%">
+| 深色 | 浅色 |
+| --- | --- |
+| ![漏洞日报（深色）](docs/assets/shot-daily-dark.png) | ![漏洞日报（浅色）](docs/assets/shot-daily-light.png) |
 
 <p align="center"><sub>热点榜：按独立来源数算热度，配 24 小时趋势。同一家媒体发十篇也只算一次。</sub></p>
+
+| 深色 | 浅色 |
+| --- | --- |
+| ![热点榜（深色）](docs/assets/shot-hot-dark.png) | ![热点榜（浅色）](docs/assets/shot-hot-light.png) |
 
 ## 改了什么
 

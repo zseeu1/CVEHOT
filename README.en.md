@@ -33,11 +33,20 @@ summary, are grouped under their CVE identifier, ranked by heat, and compiled in
 
 ## Screenshots
 
-<img src="docs/assets/shot-home.png" alt="Selection: advisories, PoC, exploit-in-the-wild and supply chain kept apart, with reports of the same CVE grouped into one event" width="100%">
+Shot in both themes. The switch sits at the foot of the sidebar on the desktop and on the 我的 page on a
+phone; a second row there picks the accent colour.
 
-<img src="docs/assets/shot-daily.png" alt="Daily brief: a lead story, the day's highlights and the day's counts" width="100%">
+| Dark | Light |
+| --- | --- |
+| ![Selection, dark](docs/assets/shot-home-dark.png) | ![Selection, light](docs/assets/shot-home-light.png) |
 
-<img src="docs/assets/shot-hot.png" alt="Trending: heat by number of independent sources, with a 24-hour trend" width="100%">
+| Dark | Light |
+| --- | --- |
+| ![Daily brief, dark](docs/assets/shot-daily-dark.png) | ![Daily brief, light](docs/assets/shot-daily-light.png) |
+
+| Dark | Light |
+| --- | --- |
+| ![Trending, dark](docs/assets/shot-hot-dark.png) | ![Trending, light](docs/assets/shot-hot-light.png) |
 
 ## What changed
 
