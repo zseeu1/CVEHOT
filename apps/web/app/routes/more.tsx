@@ -10,7 +10,8 @@ import { webModules } from "../site-modules";
 import { pageMeta } from "../lib/seo";
 import { useStarred } from "../lib/local-state";
 import { ThemeSwitch } from "../components/shell/ThemeSwitch";
-import { IconBookmark, IconChevronRight, IconGrid, IconHeart, IconMessage, IconMoon, IconPlug, IconSparkles } from "../components/icons";
+import { AccentSwitch } from "../components/shell/AccentSwitch";
+import { IconBookmark, IconChevronRight, IconGrid, IconHeart, IconMessage, IconMoon, IconPalette, IconPlug, IconSparkles } from "../components/icons";
 
 export const handle: Screen = { tab: "me", name: "我的" };
 
@@ -83,6 +84,13 @@ export default function MorePage() {
             </span>
             <span className="flex-1">外观</span>
             <ThemeSwitch className="w-[126px]" />
+          </li>
+          <li className="flex min-h-[56px] items-center gap-3 px-4 text-[16px] font-medium text-ink">
+            <span className="text-ink-3">
+              <IconPalette size={20} />
+            </span>
+            <span className="flex-1">主题色</span>
+            <AccentSwitch />
           </li>
         </Group>
         <Group title="工具与入口">

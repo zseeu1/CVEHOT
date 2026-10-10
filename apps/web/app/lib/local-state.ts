@@ -8,6 +8,7 @@ export const KEYS = {
   starred: "aihot-starred-items",
   read: "aihot-read-items",
   theme: "aihot-theme",
+  accent: "aihot-accent",
   changelogSeen: "aihot-changelog-seen-version",
   feedbackDraft: "aihot-feedback-draft-v1",
   recentSearches: "aihot-recent-searches",
@@ -112,6 +113,7 @@ function subscribeKey(key: string) {
 const subscribeStarred = subscribeKey(KEYS.starred);
 const subscribeRead = subscribeKey(KEYS.read);
 const subscribeTheme = subscribeKey(KEYS.theme);
+const subscribeAccent = subscribeKey(KEYS.accent);
 const subscribeChangelog = subscribeKey(KEYS.changelogSeen);
 const subscribeRecentSearches = subscribeKey(KEYS.recentSearches);
 
@@ -287,8 +289,50 @@ export function useThemeSync() {
   }, [pref]);
 }
 
+// accent (the theme colour)
+export const ACCENTS = ["teal", "azure", "violet", "rose", "graphite"] as const;
+export type Accent = (typeof ACCENTS)[number];
+/** The palette the stylesheet already carries, so it needs no data-accent attribute. */
+export const DEFAULT_ACCENT: Accent = "teal";
+const ACCENT_ATTRS = ACCENTS.filter((a) => a !== DEFAULT_ACCENT);
+
+function isAccent(v: string | null): v is Accent {
+  return v !== null && (ACCENTS as readonly string[]).includes(v);
+}
+
+export function getAccentPreference(): Accent {
+  const v = readRaw(KEYS.accent);
+  return isAccent(v) ? v : DEFAULT_ACCENT;
+}
+
+export function setAccentPreference(accent: Accent) {
+  // The default is stored as "no key", so a reader who never picks one follows the site's own colour.
+  writeRaw(KEYS.accent, accent === DEFAULT_ACCENT ? null : accent);
+  invalidate(KEYS.accent);
+}
+
+/** Puts the reader's accent on the page; app.css maps each value to a palette for both themes. */
+export function applyAccent(accent: Accent) {
+  const root = document.documentElement;
+  if (accent === DEFAULT_ACCENT) root.removeAttribute("data-accent");
+  else root.setAttribute("data-accent", accent);
+}
+
+export function useAccentPreference(): Accent {
+  return useSyncExternalStore(subscribeAccent, getAccentPreference, () => DEFAULT_ACCENT);
+}
+
+/** Keeps the page on the reader's accent after the first paint: a choice made in another tab. */
+export function useAccentSync() {
+  const accent = useAccentPreference();
+  useEffect(() => {
+    // Read the stored choice itself: during hydration the hook still reports the server's default.
+    applyAccent(getAccentPreference());
+  }, [accent]);
+}
+
 /** Inline script run before paint so the first frame already has the reader's theme. */
-export const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('${KEYS.theme}');if(t==='light'||t==='dark'){var c=t==='dark'?'${THEME_COLOR.dark}':'${THEME_COLOR.light}';document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){m.content=c})}else{t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){try{var a=localStorage.getItem('${KEYS.accent}');if(${JSON.stringify(ACCENT_ATTRS)}.indexOf(a)>-1)document.documentElement.setAttribute('data-accent',a);var t=localStorage.getItem('${KEYS.theme}');if(t==='light'||t==='dark'){var c=t==='dark'?'${THEME_COLOR.dark}':'${THEME_COLOR.light}';document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){m.content=c})}else{t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}})();`;
 
 // changelog red dot
 function getChangelogSeen(): string | null {

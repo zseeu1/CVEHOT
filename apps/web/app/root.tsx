@@ -15,7 +15,7 @@ import { usePageTransition } from "./components/shell/transitions";
 import { SearchOverlay } from "./features/search/SearchOverlay";
 import { BackToTop, NavigationProgress } from "./components/shell/Chrome";
 import { buttonClass } from "./components/ui/Controls";
-import { rememberPage, THEME_BOOT_SCRIPT, useThemeSync } from "./lib/local-state";
+import { rememberPage, THEME_BOOT_SCRIPT, useAccentSync, useThemeSync } from "./lib/local-state";
 import { apiGet } from "./lib/api.server";
 import { useHydratedFlag } from "./lib/hydration";
 import { titled } from "./lib/seo";
@@ -111,6 +111,7 @@ export default function App() {
   const meta = useLoaderData<typeof loader>();
   useHydratedFlag();
   useThemeSync();
+  useAccentSync();
   const { pathname, search } = useLocation();
   useEffect(() => rememberPage(pathname + search), [pathname, search]);
   usePageTransition();
@@ -134,6 +135,7 @@ export default function App() {
 
 export function ErrorBoundary() {
   useThemeSync();
+  useAccentSync();
   const error = useRouteError();
   const site = useRouteLoaderData<typeof loader>("root");
   const { pathname, search, hash } = useLocation();
