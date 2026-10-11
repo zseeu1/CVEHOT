@@ -29,7 +29,7 @@ import { latestCompositeCondition } from "../publication/scope.ts";
 import { consolidate, liveStory, type Consolidation } from "./consolidate.ts";
 import { mergeStoryInto } from "./merge.ts";
 import { candidateViews, cosine32, recallFacts, recallSelectedBackground, relatedPosts, vectorsFor } from "./recall.ts";
-import { addsValue, pairData, pairQuestion, relationOf, relationQuestions, selectionQuestion, signalQuestions } from "../editorial/jev.ts";
+import { pairData, pairQuestion, relationOf, relationQuestions, selectionData, selectionQuestion, signalQuestions } from "../editorial/jev.ts";
 import {
   BATCH_SYSTEM, BATCH_PROMPT_VERSION, BatchSchema, PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, SIGNAL_SYSTEM, SignalSchema, TIE_MIN_CONFIDENCE,
   batchUser, candidateKey, completeDecisions, firmlyTied, pairUser, reportText, sameOccurrence, signalTarget, storyForDevelopment, verdictsByFact,
@@ -92,7 +92,7 @@ async function judgeBatch(articleId: string, query: ReportView, cands: Candidate
           const { relation, confidence } = relationOf(answers, candidateKey(i));
           return { id: candidateKey(i), relation, confidence, note: "" };
         }),
-        selection: { addsValue: addsValue(answers), reason: "" },
+        selection: selectionData(answers),
       }),
     },
   });

@@ -277,9 +277,14 @@ export function pairData(answers: Record<string, SystemOneAnswer>) {
   return { a: "", b: "", relation, difference: "", confidence };
 }
 
-/** Whether the report adds something readers have not seen. The prose reason stays empty. */
-export function addsValue(answers: Record<string, SystemOneAnswer>): boolean {
+/**
+ * Whether the report adds something readers have not seen, in the shape the batch schema requires.
+ * A System One model writes no prose, so the probability stands in for the reason: it is the number
+ * the decision was actually made from, and the reader of 内容诊断 can see how firm it was.
+ */
+export function selectionData(answers: Record<string, SystemOneAnswer>): { addsValue: boolean; reason: string } {
   const answer = answerOf(answers, "adds_value");
   if (answer.type !== "noul") throw new Error(`question adds_value answered as ${answer.type}, expected noul`);
-  return answer.noul >= 0.5;
+  const addsValue = answer.noul >= 0.5;
+  return { addsValue, reason: `Jev：${addsValue ? "有" : "没有"}新增价值（概率 ${answer.noul.toFixed(2)}）` };
 }
