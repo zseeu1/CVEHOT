@@ -15,6 +15,8 @@ export interface ModelPreset {
   jsonMode: boolean;
   /** 能看图。 */
   vision?: boolean;
+  /** System One 模型（Jev）：收 state 加类型化问题，回类型化答案，不生成文本。问题集见 backend 的 editorial/jev.ts。 */
+  typed?: boolean;
 }
 
 /** 具名的模型示例（每个要配自己的密钥）。用不上可以删掉。 */
@@ -53,6 +55,18 @@ export const PRESETS: Record<string, ModelPreset> = {
   "qwen3-vl-flash": {
     service: "dashscope", model: "qwen3-vl-flash", baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
     extra: { enable_thinking: false }, jsonMode: false, vision: true,
+  },
+  // Jev 是 TypeSafe 的 System One 模型：输入 state 加一组类型化问题，返回类型化答案和概率，不生成文本，
+  // 也没有 JSON 需要解析。只接文本，不支持图片。每一步问什么写在 backend 的 editorial/jev.ts。
+  // JEV_BASE_URL 填地址本身、不带 /v1（请求发到 <base>/v1/systemone），密钥要和地址同一家：
+  //   官方   JEV_BASE_URL=https://api.typesafe.ai     JEV_API_KEY=TypeSafe 的密钥
+  //   中转   JEV_BASE_URL=https://openrouter.ai/api   JEV_API_KEY=OpenRouter 的密钥
+  // 换地址不用改代码；差别只在回执：中转会在响应里带上这次调用的实际费用（usage.cost），后台成本页
+  // 据此显示真实金额；官方不返回这个字段，成本退回按 service_prices 表估算（要自己填一行单价）。
+  // 注意模型调用不走 EGRESS_PROXY_URL（那是采集和图片用的），连不通只能在机器层面解决。
+  "jev": {
+    service: "typesafe", model: "jev-1.13", baseUrlEnv: "JEV_BASE_URL", apiKeyEnv: "JEV_API_KEY",
+    jsonMode: false, typed: true,
   },
 };
 

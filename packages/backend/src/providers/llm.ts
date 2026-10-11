@@ -20,6 +20,8 @@ export interface ModelSpec {
   reasoningTokens?: number;
   jsonMode: boolean;
   vision?: boolean;
+  /** A System One model (Jev): state plus typed questions in, typed answers out, no text and nothing to parse. */
+  typed?: boolean;
 }
 
 function extraFromEnv(value: string | undefined): Record<string, unknown> | undefined {
@@ -53,6 +55,29 @@ export const MODELS: Record<string, ModelSpec> = {
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
+/**
+ * A typed question for a System One model: the API's own shape, one answer per key you choose.
+ * `noul` is a yes/no, `choice` picks one of `criteria`'s keys, `score` grades across the ordered
+ * levels in `criteria` and answers with a probability-weighted value that may fall between them.
+ */
+export type SystemOneQuestion =
+  | { type: "noul"; instructions: unknown; criteria?: { true?: unknown; false?: unknown } }
+  | { type: "choice"; instructions: unknown; criteria: Record<string, unknown> }
+  | { type: "score"; instructions: unknown; criteria: unknown[] };
+
+/** One answer as the API returns it; `choice` and `score` also carry the distribution and its confidence. */
+export type SystemOneAnswer =
+  | { type: "noul"; noul: number }
+  | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: "score"; score: number; legend?: Record<string, string>; probabilities: Record<string, number>; confidence: number };
+
+/** The typed route for one step: what to evaluate, what to ask, and how the answers fill its schema. */
+export interface SystemOneOptions {
+  state: unknown;
+  questions: Record<string, SystemOneQuestion>;
+  toData: (answers: Record<string, SystemOneAnswer>) => unknown;
+}
+
 export interface ChatJsonOptions<S extends z.ZodType> {
   model: string;
   purpose: string;
@@ -68,6 +93,11 @@ export interface ChatJsonOptions<S extends z.ZodType> {
   /** false: the model answers in its own text format (no JSON mode); `parse` turns it into the schema's input. */
   json?: boolean;
   parse?: (content: string) => unknown;
+  /**
+   * The typed route, used only when the chosen model is a System One one (spec.typed). A step that
+   * supplies this runs on Jev; without it, or with a text model chosen, the prompt above is used.
+   */
+  systemOne?: SystemOneOptions;
 }
 
 export interface ChatJsonResult<T> {
@@ -126,10 +156,15 @@ function isConnectFailure(error: unknown): boolean {
   return ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "CERT_HAS_EXPIRED"].includes(code ?? "");
 }
 
+/** A gateway refusing by region: it answers this way for a while and then serves the same call again. */
+const REGION_REFUSAL = /not available in your region|Geo Restrictions/i;
+
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
   const spec = MODELS[opts.model];
   if (!spec) throw new Error(`Unknown model ${opts.model}`);
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
+  // A System One model writes no text: it answers typed questions, so it takes its own route.
+  if (spec.typed) return systemOneJson(opts, spec);
   const baseUrl = credential("models", spec.baseUrlEnv);
   const apiKey = credential("models", spec.apiKeyEnv);
   if (!baseUrl || !apiKey || !spec.model) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv}${spec.key === "default" ? ", LLM_MODEL" : ""})`);
@@ -207,6 +242,94 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
       : String(error);
     await rejectReceivedResponse(receipt.receiptId, `unusable output: ${detail.slice(0, 500)}`);
     throw new ModelOutputError(`Model ${opts.model} returned unusable output for ${opts.subject}: ${detail.slice(0, 300)}`, receipt.receiptId);
+  }
+  return { data: parsed, receiptId: receipt.receiptId, reused: receipt.reused, model: spec.key, usage: response.usage ?? null };
+}
+
+/**
+ * One System One call (Jev): the model reads the state once and answers every question against it,
+ * in parallel. Answers come back already typed, so nothing is parsed out of generated text; `toData`
+ * only reshapes them into the step's own schema. A rate limit or a 5xx is retryable and left to the
+ * queue, as on the chat route. OpenRouter reports the run's real cost and an id, both kept.
+ */
+async function systemOneJson<S extends z.ZodType>(opts: ChatJsonOptions<S>, spec: ModelSpec): Promise<ChatJsonResult<z.infer<S>>> {
+  const route = opts.systemOne;
+  if (!route) throw new Error(`Model ${opts.model} answers typed questions only: ${opts.subject} must supply a question set`);
+  const baseUrl = credential("models", spec.baseUrlEnv);
+  const apiKey = credential("models", spec.apiKeyEnv);
+  if (!baseUrl || !apiKey || !spec.model) throw new Error(`Model ${opts.model} is not configured (${spec.baseUrlEnv}, ${spec.apiKeyEnv})`);
+
+  const body = { model: spec.model, state: route.state, questions: route.questions };
+  const sent = JSON.stringify(body);
+
+  const receipt = await paidRequest(
+    {
+      service: spec.service,
+      model: spec.model,
+      purpose: opts.purpose,
+      subject: opts.subject,
+      // No prompt file drives a typed call: the state and the questions are the whole identity.
+      identity: { model: spec.model, promptVersion: opts.promptVersion, protocol: "systemone", request: sha256(sent) },
+      requestSummary: {
+        promptVersion: opts.promptVersion, requestHash: sha256(sent), requestChars: sent.length,
+        questions: Object.keys(route.questions),
+      },
+      attemptTag: opts.attemptTag,
+    },
+    async () => {
+      const started = Date.now();
+      let res: Response;
+      try {
+        res = await fetch(`${baseUrl.replace(/\/$/, "")}/v1/systemone`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+          body: sent,
+          signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+        });
+      } catch (error) {
+        if (isConnectFailure(error)) throw new ProviderRejectedError(`connect failed: ${String(error)}`, null, true);
+        throw error;
+      }
+      const text = await res.text();
+      try {
+        assertAccepted(spec.service, res.status, text);
+      } catch (error) {
+        // A region refusal is the gateway's state, not this request's fault: OpenRouter answered 403
+        // "not available in your region" for a few minutes on 2026-10-10 and served the same calls
+        // again afterwards. assertAccepted treats every non-429/5xx as terminal, which would strand
+        // each item that arrived during such a window until someone re-ran it by hand.
+        if (res.status === 403 && REGION_REFUSAL.test(text)) {
+          throw new ProviderRejectedError(`${spec.service} HTTP ${res.status}: ${text.slice(0, 500)}`, res.status, true);
+        }
+        throw error;
+      }
+      let json: Record<string, unknown>;
+      try {
+        json = JSON.parse(text);
+        if (!json || typeof json !== "object" || Array.isArray(json)) throw new Error("Expected a response object");
+      } catch {
+        json = { unparsable: text.slice(0, 20000) };
+      }
+      const usage = (json.usage as Record<string, unknown> | undefined) ?? null;
+      // The gateway bills the run and states the amount; without one the receipt stays uncosted.
+      const amount = typeof usage?.cost === "number" ? usage.cost : null;
+      return {
+        response: { ...json, _latencyMs: Date.now() - started },
+        requestId: (json.id as string | undefined) ?? res.headers.get("x-request-id"),
+        usage,
+        cost: amount === null ? null : { amount, currency: "USD", basis: "actual" as const },
+      };
+    },
+  );
+
+  const response = receipt.response as { answers?: Record<string, SystemOneAnswer>; usage?: Record<string, unknown> };
+  let parsed: z.infer<S>;
+  try {
+    parsed = opts.schema.parse(route.toData(response.answers ?? {}));
+  } catch (error) {
+    // A missing or malformed answer set is not a verdict: record it and let a later attempt pay again.
+    await rejectReceivedResponse(receipt.receiptId, `unusable answers: ${String(error).slice(0, 500)}`);
+    throw new ModelOutputError(`Model ${opts.model} returned unusable answers for ${opts.subject}: ${String(error).slice(0, 300)}`, receipt.receiptId);
   }
   return { data: parsed, receiptId: receipt.receiptId, reused: receipt.reused, model: spec.key, usage: response.usage ?? null };
 }

@@ -18,3 +18,6 @@ fontsource-noto-sans-sc-*.tgz
 # 工具（rsvg-convert 等）写文件时留下的临时文件
 .goutputstream-*
 *.swp
+
+# 项目变更日志：记每天改了什么、踩过哪些坑，只留本地，不上传 GitHub
+log.md

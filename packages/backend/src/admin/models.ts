@@ -107,7 +107,11 @@ export async function switchModel(capability: string, model: string | null, reas
   if (model !== null) {
     const spec = MODELS[model];
     if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
-    if (!capabilityAcceptsModel(c, spec)) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
+    if (!capabilityAcceptsModel(c, spec)) {
+      // Two reasons to refuse: the step needs images, or it must write text this model cannot.
+      const reason = c.vision && spec.vision !== true ? "this capability needs a vision model" : "this capability writes text, which this model cannot";
+      throw Object.assign(new Error(reason), { statusCode: 400 });
+    }
   }
   const before = (await modelSources())[capability];
   if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;

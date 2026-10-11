@@ -61,6 +61,7 @@ Only the industry pack. The engine is upstream's.
 - `site/brand/`: own icons
 - `modules/cve-repo-index/`: new, how many PoC repositories exist for a given CVE
 - `modules/gh-poc-scan/`: new, periodically scans GitHub for new CVE repositories
+- the four judging steps (filtering, scoring, grouping, group review) can be handed to [Jev](https://openrouter.ai/~typesafe/jev-latest), which returns typed answers and probabilities rather than text; without a key they keep using the default model
 
 ## Credit
 
@@ -110,6 +111,24 @@ A few sources use the GitHub API (security advisories, new CVE repositories). Un
 3. Click **Generate token** at the bottom and copy the `ghp_...` string
 4. Add a line to the project's `.env`: `GITHUB_TOKEN=ghp_...`
 5. Restart: `docker compose up -d`
+
+### Optional: run the judging steps on Jev
+
+The four steps that judge rather than write (filtering, scoring, grouping and group review) can be handed to [Jev](https://openrouter.ai/~typesafe/jev-latest), TypeSafe's System One model. It reads the whole item once and returns a handful of typed answers with probabilities, and writes nothing.
+
+Add to `.env`:
+
+```bash
+JEV_BASE_URL=https://openrouter.ai/api
+JEV_API_KEY=sk-or-v1-...
+
+PREFILTER_MODEL=jev
+SCORE_MODEL=jev
+```
+
+The same goes for `GROUP_MODEL` and `GROUP_REVIEW_MODEL`. Without `JEV_API_KEY` these steps keep using the default model, and nothing else changes.
+
+> **Region restriction**: Jev admits requests by egress region. Deployments whose egress sits in a restricted region get a 403 and the four judging steps stop; the writing steps are unaffected.
 
 See [docs/deploy.md](docs/deploy.md) for deployment, domains and HTTPS.
 

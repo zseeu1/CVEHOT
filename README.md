@@ -70,6 +70,7 @@
 - `site/brand/` 换成自己的图标
 - `modules/cve-repo-index/` 新增，查某个编号到现在有多少个 PoC 仓库
 - `modules/gh-poc-scan/` 新增，定时扫 GitHub 上新出现的 CVE 仓库，推给站里
+- 判断类的那四个步骤（预筛、评分、归组、归组复核）可以交给 [Jev](https://openrouter.ai/~typesafe/jev-latest)，它只回类型化答案和概率、不写文字；没配 key 时仍走默认模型
 
 ## 借鉴
 
@@ -119,6 +120,24 @@ docker compose up -d --build
 3. 拉到底点 **Generate token**，复制 `ghp_` 开头的那一串
 4. 打开项目里的 `.env`，加一行 `GITHUB_TOKEN=ghp_这里贴你复制的那串`
 5. 重启：`docker compose up -d`
+
+### 可选：判断步骤走 Jev
+
+流水线里做判断的四个步骤（预筛、评分、归组、归组复核）不生成文字，可以交给 [Jev](https://openrouter.ai/~typesafe/jev-latest)，TypeSafe 的 System One 模型。它一次读完整篇材料，只回几个类型化答案和概率，不写任何文字。
+
+在 `.env` 里加：
+
+```bash
+JEV_BASE_URL=https://openrouter.ai/api
+JEV_API_KEY=sk-or-v1-...
+
+PREFILTER_MODEL=jev
+SCORE_MODEL=jev
+```
+
+`GROUP_MODEL` 和 `GROUP_REVIEW_MODEL` 同理。没填 `JEV_API_KEY` 时，这几步照常走默认模型，其余流程不受影响。
+
+> **区域限制**：Jev 按出口地区放行。出口在受限地区的部署会收到 403，四个判断步骤随之停摆，写作类的步骤不受影响。
 
 部署到服务器、配域名和 HTTPS 看 [docs/deploy.md](docs/deploy.md)。
 

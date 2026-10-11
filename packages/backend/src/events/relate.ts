@@ -71,7 +71,9 @@ export const BatchSchema = z.object({
   query: z.string().max(400).catch(""),
   decisions: z
     .array(z.object({ id: z.string().regex(/^C[1-9]\d*$/), relation: RelationSchema, confidence: z.number().min(0).max(1), note: z.string().max(400).catch("") })),
-  selection: z.object({ addsValue: z.boolean(), reason: z.string().trim().min(1).max(400) }),
+  // The reason explains the value judgement in prose. A System One model answers only the boolean
+  // and writes no text, so the field tolerates an empty one; the chat route still fills it.
+  selection: z.object({ addsValue: z.boolean(), reason: z.string().trim().max(400).catch("") }),
 });
 
 export const PairSchema = z.object({

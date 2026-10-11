@@ -2,6 +2,7 @@
 // one story that grew two roots: their roots are compared directly and merge only when both models
 // see one story. Stories that stay apart though reports keep tying them list each other as related
 // events (linkRelatedStories, hourly).
+import { pairData, pairQuestion } from "../editorial/jev.ts";
 import { modelFor } from "../editorial/models.ts";
 import { beijingDate } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
@@ -53,9 +54,11 @@ async function storyRoot(storyId: number): Promise<StoryRoot | null> {
 }
 
 async function judgeStories(capability: "group" | "groupReview", a: StoryRoot, b: StoryRoot): Promise<{ relation: Relation; confidence: number; difference: string; receiptId: number }> {
+  const pair = pairUser(a.report, b.report);
   const res = await chatJson({
     model: await modelFor(capability), purpose: capability === "group" ? "group_story" : "group_story_review", subject: `story:${a.storyId}:${b.storyId}`,
-    promptVersion: RELATE_PROMPT_VERSION, system: PAIR_SYSTEM, user: pairUser(a.report, b.report), schema: PairSchema, temperature: 0, maxTokens: 400,
+    promptVersion: RELATE_PROMPT_VERSION, system: PAIR_SYSTEM, user: pair, schema: PairSchema, temperature: 0, maxTokens: 400,
+    systemOne: { state: pair, questions: { relation: pairQuestion() }, toData: pairData },
   });
   return { relation: res.data.relation, confidence: res.data.confidence, difference: res.data.difference, receiptId: res.receiptId };
 }

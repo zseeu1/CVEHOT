@@ -29,9 +29,10 @@ import { latestCompositeCondition } from "../publication/scope.ts";
 import { consolidate, liveStory, type Consolidation } from "./consolidate.ts";
 import { mergeStoryInto } from "./merge.ts";
 import { candidateViews, cosine32, recallFacts, recallSelectedBackground, relatedPosts, vectorsFor } from "./recall.ts";
+import { addsValue, pairData, pairQuestion, relationOf, relationQuestions, selectionQuestion, signalQuestions } from "../editorial/jev.ts";
 import {
   BATCH_SYSTEM, BATCH_PROMPT_VERSION, BatchSchema, PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, SIGNAL_SYSTEM, SignalSchema, TIE_MIN_CONFIDENCE,
-  batchUser, completeDecisions, firmlyTied, pairUser, reportText, sameOccurrence, signalTarget, storyForDevelopment, verdictsByFact,
+  batchUser, candidateKey, completeDecisions, firmlyTied, pairUser, reportText, sameOccurrence, signalTarget, storyForDevelopment, verdictsByFact,
   type CandidateView, type ReadingContext, type Relation, type ReportView, type SelectionValue, type Verdict,
 } from "./relate.ts";
 
@@ -75,26 +76,55 @@ function participantKey(source: { id: string; signal_group_id: string | null }):
 const NO_SELECTED_COVERAGE: SelectionValue = { addsValue: true, reason: "没有已公开精选的相关报道" };
 
 async function judgeBatch(articleId: string, query: ReportView, cands: CandidateView[], reading: ReadingContext[]): Promise<{ verdicts: Map<number, Verdict>; selection: SelectionValue; receiptId: number }> {
+  // Both routes read the same material. The chat route hands it over as one prompt and takes the
+  // relations from parsed text; a System One model gets it as state and answers one typed question
+  // per candidate plus the value question, all in the same call.
+  const material = batchUser(query, cands, "新报道", reading);
   const res = await chatJson({
     model: await modelFor("group"), purpose: "group_article", subject: `article:${articleId}`, promptVersion: BATCH_PROMPT_VERSION,
-    system: BATCH_SYSTEM, user: batchUser(query, cands, "新报道", reading), schema: BatchSchema.refine(value => completeDecisions(value.decisions, cands.length), "Every candidate requires exactly one decision"), temperature: 0, maxTokens: 400 + 120 * cands.length,
+    system: BATCH_SYSTEM, user: material, schema: BatchSchema.refine(value => completeDecisions(value.decisions, cands.length), "Every candidate requires exactly one decision"), temperature: 0, maxTokens: 400 + 120 * cands.length,
+    systemOne: {
+      state: material,
+      questions: { ...relationQuestions(cands.map((_c, i) => candidateKey(i))), adds_value: selectionQuestion() },
+      toData: (answers) => ({
+        query: "",
+        decisions: cands.map((_c, i) => {
+          const { relation, confidence } = relationOf(answers, candidateKey(i));
+          return { id: candidateKey(i), relation, confidence, note: "" };
+        }),
+        selection: { addsValue: addsValue(answers), reason: "" },
+      }),
+    },
   });
   return { verdicts: verdictsByFact(res.data.decisions, cands), selection: cands.some(c => c.selected) || reading.length ? res.data.selection : NO_SELECTED_COVERAGE, receiptId: res.receiptId };
 }
 
 /** The review model reads both reports on their own; a merge stands only when it agrees. */
 async function confirmMerge(articleId: string, query: ReportView, cand: CandidateView): Promise<{ relation: Relation; receiptId: number }> {
+  const pair = pairUser(query, cand.report);
   const res = await chatJson({
     model: await modelFor("groupReview"), purpose: "group_review", subject: `article:${articleId}:fact:${cand.factId}`, promptVersion: RELATE_PROMPT_VERSION,
-    system: PAIR_SYSTEM, user: pairUser(query, cand.report), schema: PairSchema, temperature: 0, maxTokens: 400,
+    system: PAIR_SYSTEM, user: pair, schema: PairSchema, temperature: 0, maxTokens: 400,
+    systemOne: { state: pair, questions: { relation: pairQuestion() }, toData: pairData },
   });
   return { relation: res.data.relation, receiptId: res.receiptId };
 }
 
 async function judgeSignal(articleId: string, query: ReportView, cands: CandidateView[]): Promise<{ verdicts: Map<number, Verdict>; receiptId: number }> {
+  const material = batchUser(query, cands, "帖子");
   const res = await chatJson({
     model: await modelFor("group"), purpose: "group_signal", subject: `article:${articleId}`, promptVersion: RELATE_PROMPT_VERSION,
-    system: SIGNAL_SYSTEM, user: batchUser(query, cands, "帖子"), schema: SignalSchema.refine(value => completeDecisions(value.decisions, cands.length), "Every candidate requires exactly one decision"), temperature: 0, maxTokens: 150 + 60 * cands.length,
+    system: SIGNAL_SYSTEM, user: material, schema: SignalSchema.refine(value => completeDecisions(value.decisions, cands.length), "Every candidate requires exactly one decision"), temperature: 0, maxTokens: 150 + 60 * cands.length,
+    systemOne: {
+      state: material,
+      questions: signalQuestions(cands.map((_c, i) => candidateKey(i))),
+      toData: (answers) => ({
+        decisions: cands.map((_c, i) => {
+          const { relation, confidence } = relationOf(answers, candidateKey(i));
+          return { id: candidateKey(i), relation, confidence };
+        }),
+      }),
+    },
   });
   return { verdicts: verdictsByFact(res.data.decisions, cands), receiptId: res.receiptId };
 }

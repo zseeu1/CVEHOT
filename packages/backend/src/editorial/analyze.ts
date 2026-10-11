@@ -26,6 +26,7 @@ import {
   type IdentityGuard,
 } from "./writing.ts";
 import { CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
+import { attentionScore, prefilterLabel, prefilterQuestions, scoreQuestions } from "./jev.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { originalPostCopy } from "../content/posts.ts";
 
@@ -86,7 +87,8 @@ export function scoreInputTime(at: Date): string {
  * The score input: no source facts (the prompt forbids guessing them), the publication time, the
  * original title (items are scored before any Chinese copy exists) and the whole body.
  */
-export function buildScoreInput(a: AnalyzeInputArticle): string {
+/** The body a score reads: the post's own text with whatever it quotes, else the article's body. */
+export function scoreBody(a: AnalyzeInputArticle): string {
   let body: string;
   if (a.xPost) {
     const quoted = a.xPost.quoted?.text ? `\n\n[引用 ${a.xPost.quoted.handle ? `@${a.xPost.quoted.handle}` : "原推文"}]：${a.xPost.quoted.text}` : "";
@@ -95,13 +97,30 @@ export function buildScoreInput(a: AnalyzeInputArticle): string {
     body = (a.bodyText ?? a.excerpt ?? "").trim();
   }
   if (!body) body = a.title;
+  return body.length > MAX_BODY_CHARS ? body.slice(0, MAX_BODY_CHARS) : body;
+}
+
+export function buildScoreInput(a: AnalyzeInputArticle): string {
   const at = a.publishedAt;
   return [
     "请按系统规则评估以下单篇材料所代表的事件。只输出 attentionScore。",
     `【发布时间（北京时间）】\n${at ? scoreInputTime(at) : "未知（收录时间不代表发布时间）"}`,
     `【标题】\n${a.title.trim()}`,
-    `【完整正文】\n${body.length > MAX_BODY_CHARS ? body.slice(0, MAX_BODY_CHARS) : body}`,
+    `【完整正文】\n${scoreBody(a)}`,
   ].join("\n\n");
+}
+
+/**
+ * The same material as named fields for the System One route, so a question can point at the body
+ * alone. Deliberately carries no source name, tier or earlier score: the standard forbids scoring
+ * on those, and the chat route withholds them as well.
+ */
+export function scoreState(a: AnalyzeInputArticle): Record<string, string> {
+  return {
+    title: a.title.trim(),
+    published_at: a.publishedAt ? scoreInputTime(a.publishedAt) : "未知（收录时间不代表发布时间）",
+    body: scoreBody(a),
+  };
 }
 
 // Step outputs
@@ -246,6 +265,13 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Ana
     temperature: 0,
     maxTokens: 512,
     attemptTag: opts.attemptTag,
+    // On a System One model the same material is judged as one typed choice; nothing is generated,
+    // and the free-text reason the prompt used to write is simply absent.
+    systemOne: {
+      state: prefilterUser(a),
+      questions: prefilterQuestions(),
+      toData: (answers) => ({ label: prefilterLabel(answers), reason: "" }),
+    },
   });
   // A BLOCK without material to back it counts as UNKNOWN (which goes on).
   const label = res.data.label === "BLOCK" && missingEvidence(a) ? "UNKNOWN" : res.data.label;
@@ -278,6 +304,7 @@ async function runScores(
   const model = opts.scoreModel ?? (await modelFor("score"));
   const call = scoreCall(model);
   const input = buildScoreInput(a);
+  const state = scoreState(a);
   const values: number[] = [];
   const receiptIds: number[] = [];
   let reused = true;
@@ -290,6 +317,13 @@ async function runScores(
         schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
         // Each call is its own paid request; an explicit re-evaluation gets new ones.
         attemptTag: tagged(opts.attemptTag, `score-${i + 1}`),
+        // On a System One model the standard is asked as six typed questions (the content type and
+        // the five axes) and weighted here, instead of being computed inside one answer.
+        systemOne: {
+          state,
+          questions: scoreQuestions(),
+          toData: (answers) => ({ attentionScore: attentionScore(answers) }),
+        },
       });
       onReceipt?.(res.receiptId);
       values.push(res.data.attentionScore);

@@ -3,6 +3,7 @@
 // Read at call time and cached for a minute, so a switch applies to the next call without a restart; a
 // changed model only affects work done from then on (history is not re-judged).
 import { DEFAULTS } from "@aihot/site/models";
+import { credential } from "../config.ts";
 import { sql } from "../db.ts";
 import { serverModules } from "../modules.ts";
 import { MODELS } from "../providers/llm.ts";
@@ -16,20 +17,25 @@ export interface Capability {
   purposes: string[];
   /** The step needs a model that reads images. */
   vision?: boolean;
+  /**
+   * The step's answer contains free text that cannot be left empty: copy a reader sees, or a span
+   * quoted out of the material. A model that only answers typed questions cannot do it.
+   */
+  text?: boolean;
 }
 
 export const CAPABILITIES = {
   prefilter: { label: "精选预筛（是否属于这个行业，宽召回）", env: "PREFILTER_MODEL", default: DEFAULTS.prefilter ?? "default", purposes: ["prefilter_article"] },
   score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: DEFAULTS.score ?? "default", purposes: ["score_article"] },
-  understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由，能看图时看首图）", env: "UNDERSTAND_MODEL", default: DEFAULTS.understand ?? "default", purposes: ["understand_article"] },
-  summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: DEFAULTS.summarize ?? "default", purposes: ["summarize_article"] },
-  structure: { label: "结构抽取（分类、标签、主体公司、事件事实，不写读者文字）", env: "STRUCTURE_MODEL", default: DEFAULTS.structure ?? "default", purposes: ["structure_article"] },
+  understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由，能看图时看首图）", env: "UNDERSTAND_MODEL", default: DEFAULTS.understand ?? "default", purposes: ["understand_article"], text: true },
+  summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: DEFAULTS.summarize ?? "default", purposes: ["summarize_article"], text: true },
+  structure: { label: "结构抽取（分类、标签、主体公司、事件事实，不写读者文字）", env: "STRUCTURE_MODEL", default: DEFAULTS.structure ?? "default", purposes: ["structure_article"], text: true },
   group: { label: "事件归组（新报道与候选事实的关系：同一次发生、同一事件的进展、无关；被同一篇报道连起来的两个事件是否同一事件）", env: "GROUP_MODEL", default: DEFAULTS.group ?? "default", purposes: ["group_article", "group_signal", "group_story"] },
   groupReview: { label: "归组复核（相似度不高的合并、两个事件的合并，写入前再读一遍；最好换一家模型）", env: "GROUP_REVIEW_MODEL", default: DEFAULTS.groupReview ?? "default", purposes: ["group_review", "group_story_review"] },
-  digest: { label: "事件综述", env: "DIGEST_MODEL", default: DEFAULTS.digest ?? "default", purposes: ["story_digest"] },
+  digest: { label: "事件综述", env: "DIGEST_MODEL", default: DEFAULTS.digest ?? "default", purposes: ["story_digest"], text: true },
   // Dailies are computed by rule; report_lead and report_daily remain for their older receipts.
-  report: { label: "周报月报的总述与主题（日报由规则算出，不用模型）", env: "REPORT_MODEL", default: DEFAULTS.report ?? "default", purposes: ["report_weekly", "report_monthly", "report_lead", "report_daily"] },
-  translate: { label: "精选全文翻译（含引用帖）", env: "TRANSLATE_MODEL", default: DEFAULTS.translate ?? "default", purposes: ["translate_body", "translate_quoted"] },
+  report: { label: "周报月报的总述与主题（日报由规则算出，不用模型）", env: "REPORT_MODEL", default: DEFAULTS.report ?? "default", purposes: ["report_weekly", "report_monthly", "report_lead", "report_daily"], text: true },
+  translate: { label: "精选全文翻译（含引用帖）", env: "TRANSLATE_MODEL", default: DEFAULTS.translate ?? "default", purposes: ["translate_body", "translate_quoted"], text: true },
 } satisfies Record<string, Capability>;
 
 export type CapabilityKey = keyof typeof CAPABILITIES;
@@ -68,9 +74,20 @@ export function modelSupportsVision(model: string): boolean {
   return MODELS[model]?.vision === true;
 }
 
-/** Whether a step can use a registered model. A model that reads images writes text as well. */
-export function capabilityAcceptsModel(capability: Capability, model: { vision?: boolean }): boolean {
-  return !capability.vision || model.vision === true;
+/**
+ * Whether a step can use a registered model. A model that reads images writes text as well, so it
+ * covers every step; a model that only answers typed questions covers every step but the ones whose
+ * answer must contain free text.
+ */
+export function capabilityAcceptsModel(capability: Capability, model: { vision?: boolean; typed?: boolean }): boolean {
+  if (capability.vision && model.vision !== true) return false;
+  return !(capability.text === true && model.typed === true);
+}
+
+/** Whether a registered model has both its address and its key, so a call to it can be made at all. */
+function configured(model: string): boolean {
+  const spec = MODELS[model];
+  return !!spec && !!spec.model && !!credential("models", spec.baseUrlEnv) && !!credential("models", spec.apiKeyEnv);
 }
 
 /** The model a capability uses now: admin switch, else environment, else the code default. */
@@ -78,7 +95,12 @@ export async function modelFor(capability: CapabilityKey | (string & {})): Promi
   const c = capabilities()[capability];
   if (!c) throw new Error(`unknown model step: ${capability}`);
   const chosen = (await overrides())[capability] ?? process.env[c.env] ?? c.default;
-  return MODELS[chosen] ? chosen : c.default;
+  const spec = MODELS[chosen];
+  if (!spec) return c.default;
+  // A typed model (Jev) is an addition a deployment may simply not have set up: without its key the
+  // step keeps the default it would have used anyway, which is what "configured, then used" means.
+  // A named preset without a key is still a misconfiguration, and the call reports it.
+  return spec.typed === true && !configured(chosen) ? c.default : chosen;
 }
 
 /** Where the current choice comes from, for the admin page. */
