@@ -74,8 +74,19 @@ jobs:
 
       # Each test file runs on its own copy of aihot_ci (tests/databases.ts), which the run migrates and
       # leaves empty; the smoke check then reads that empty database.
+      #
+      # The default reporter prints every passing test, so a failing run's log goes past GitHub's inline
+      # limit and the page collapses the step to "View the raw logs from the menu", which needs a
+      # signed-in session to fetch. Print the summary and the failing tests instead: that stays readable
+      # in the browser with no extra rights, which is what a failure is for.
       - name: Backend tests
-        run: npm test
+        run: |
+          npm test > "$RUNNER_TEMP/backend-tests.log" 2>&1 || {
+            echo "===== failing tests ====="
+            grep -E "^✖|not ok|AssertionError|^ℹ (tests|suites|pass|fail|cancelled|skipped|todo)" "$RUNNER_TEMP/backend-tests.log" | tail -200
+            echo "===== end ====="
+            exit 1
+          }
       - name: Smoke check of the built site
         # The site itself runs with collection and model calls off (the tests above use local stubs).
         env:
