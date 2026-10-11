@@ -10,7 +10,7 @@
 import type { Relation } from "../events/relate.ts";
 import type { SystemOneAnswer, SystemOneQuestion } from "../providers/llm.ts";
 
-/** The seven content types of the scoring standard, most severe first. */
+/** The six content types of the scoring standard, most severe first. */
 export const CONTENT_TYPES = [
   "exploited_vuln",
   "poc_release",
@@ -18,7 +18,6 @@ export const CONTENT_TYPES = [
   "supply_chain",
   "exploit_technique",
   "incident_report",
-  "industry_policy",
 ] as const;
 
 export type ContentType = (typeof CONTENT_TYPES)[number];
@@ -39,7 +38,6 @@ const TYPE_WEIGHTS: Record<ContentType, Record<Axis, number>> = {
   supply_chain: { sig: 3, nov: 2, cred: 1, reson: 2, act: 2 },
   exploit_technique: { sig: 2, nov: 3, cred: 1, reson: 1, act: 3 },
   incident_report: { sig: 3, nov: 2, cred: 2, reson: 3, act: 0 },
-  industry_policy: { sig: 2, nov: 2, cred: 2, reson: 3, act: 1 },
 };
 
 /**
@@ -57,7 +55,6 @@ const CONTENT_TYPE_CRITERIA = {
   supply_chain: "开源仓库投毒、恶意包、依赖混淆、构建与发布凭证滥用",
   exploit_technique: "利用技术、绕过手法、利用链分析、检测与缓解方法",
   incident_report: "已发生的真实攻击、勒索、数据泄露与事后复盘",
-  industry_policy: "漏洞治理政策、监管与标准、赏金与漏洞市场、生态趋势",
 };
 
 /** 0-2-4-6-8-10: how much the event matters for "do I have to act today". */

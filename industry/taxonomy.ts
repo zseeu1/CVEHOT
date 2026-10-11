@@ -5,7 +5,7 @@
 /**
  * 网页上的类别（筛选栏、卡片角标、RSS 分类订阅）。key 是网址和接口里的身份，上线后不要改。
  * section 是日报里的分节标题（几个类别可以共用一节，按这里的顺序排）；guide 告诉模型怎么归类。
- * 没归上类的资料在日报里放进第一个 key 为 industry 的类别所在的节（没有就放最后一节）。
+ * 没归上类的资料在日报里放进最后一节。
  */
 export const CATEGORIES = [
   { key: "exploited", label: "在野利用", section: "在野利用与紧急处置", guide: "已确认被在野利用、已列入 CISA KEV、或已被大规模扫描攻击的漏洞与攻击活动" },
@@ -13,20 +13,19 @@ export const CATEGORIES = [
   { key: "advisory", label: "漏洞通告", section: "漏洞通告与补丁", guide: "厂商、CERT、GitHub 安全公告库等发布的漏洞通告、补丁与影响版本说明" },
   { key: "supply-chain", label: "供应链", section: "供应链与依赖风险", guide: "开源仓库投毒、恶意包、依赖混淆、构建与发布凭证被滥用的风险与事件" },
   { key: "incident", label: "攻击事件", section: "攻击事件与应急", guide: "已发生的真实攻击、勒索、数据泄露，以及应急响应与处置复盘" },
-  { key: "industry", label: "行业与政策", section: "行业与政策", guide: "漏洞治理政策与监管、行业标准、赏金与漏洞市场、生态趋势" },
 ] as const;
 
 /**
  * 内容理解一步给每篇资料判的“内容类型”（写在 prompts/content-understanding.md 里，改了类型要同步改那份提示词）。
  * 评分提示词（prompts/selection-score.md）按类型给五个维度不同的权重。
  */
-export const ITEM_TYPES = ["exploited_vuln", "poc_release", "vendor_advisory", "supply_chain", "exploit_technique", "incident_report", "industry_policy"] as const;
+export const ITEM_TYPES = ["exploited_vuln", "poc_release", "vendor_advisory", "supply_chain", "exploit_technique", "incident_report"] as const;
 
 // ── 标签词表 ────────────────────────────────────────────────────────────────────────────
 
 /** 每篇资料的第一个标签必须是这些“分类标签”之一。 */
 export const CATEGORY_TAGS = [
-  "在野利用", "PoC/复现", "漏洞通告", "补丁/修复", "供应链", "攻击事件", "利用技术", "行业/政策", "其他",
+  "在野利用", "PoC/复现", "漏洞通告", "补丁/修复", "供应链", "攻击事件", "利用技术", "其他",
 ] as const;
 
 /** 可选的主题标签。 */
@@ -73,7 +72,7 @@ export const TAG_SYNONYMS: Readonly<Record<string, string>> = {
 /** 模型漏了分类标签时，按内容类型补一个。 */
 export const CATEGORY_BY_ITEM_TYPE: Readonly<Record<string, string>> = {
   exploited_vuln: "在野利用", poc_release: "PoC/复现", vendor_advisory: "漏洞通告", supply_chain: "供应链",
-  exploit_technique: "利用技术", incident_report: "攻击事件", industry_policy: "行业/政策",
+  exploit_technique: "利用技术", incident_report: "攻击事件",
 };
 
 // ── 厂商与组件 ──────────────────────────────────────────────────────────────────────────

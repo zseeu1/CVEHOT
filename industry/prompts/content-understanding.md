@@ -8,7 +8,7 @@
 
 ## 内容类型
 
-`itemType` 必须七选一：
+`itemType` 必须六选一：
 
 - `exploited_vuln`：已确认在野利用、已列入 CISA KEV 或被大规模扫描攻击的漏洞
 - `poc_release`：公开了 PoC、EXP 或复现步骤的漏洞
@@ -16,11 +16,10 @@
 - `supply_chain`：开源仓库投毒、恶意包、依赖混淆、构建与发布凭证滥用
 - `exploit_technique`：利用技术、绕过手法、利用链分析、检测与缓解方法
 - `incident_report`：已发生的真实攻击、勒索、数据泄露与事后复盘
-- `industry_policy`：漏洞治理政策、监管与标准、赏金与漏洞市场、生态趋势
 
-优先级：确认被利用选 exploited_vuln；公开了 PoC 选 poc_release；正式通告与补丁选 vendor_advisory；谈利用手法选 exploit_technique；讲已经发生的事故选 incident_report；政策与行业选 industry_policy。
+优先级：确认被利用选 exploited_vuln；公开了 PoC 选 poc_release；正式通告与补丁选 vendor_advisory；谈利用手法选 exploit_technique；讲已经发生的事故选 incident_report。材料只是某个人建了一个漏洞工具或仓库、没有公开任何漏洞细节时，不硬套这六类，按材料实际支持的那一类填，实在不支持就填最接近的一类，不要因为「讲的是安全圈的动向」就选 incident_report。
 
-输出前检查 `itemType` 与第一个分类标签是否自洽：`exploited_vuln` 对应“在野利用”，`poc_release` 对应“PoC/复现”，`vendor_advisory` 对应“漏洞通告”或“补丁/修复”，`supply_chain` 对应“供应链”，`exploit_technique` 对应“利用技术”，`incident_report` 对应“攻击事件”，`industry_policy` 对应“行业/政策”。如果二者冲突，按当前材料的核心事件修正后再输出。
+输出前检查 `itemType` 与第一个分类标签是否自洽：`exploited_vuln` 对应“在野利用”，`poc_release` 对应“PoC/复现”，`vendor_advisory` 对应“漏洞通告”或“补丁/修复”，`supply_chain` 对应“供应链”，`exploit_technique` 对应“利用技术”，`incident_report` 对应“攻击事件”。如果二者冲突，按当前材料的核心事件修正后再输出。
 
 ## 作者角色
 
@@ -32,14 +31,14 @@
 
 ## 标签
 
-`tags` 输出 1–6 个字符串。第一个必须从以下分类标签中选一个：在野利用、PoC/复现、漏洞通告、补丁/修复、供应链、攻击事件、利用技术、行业/政策、其他。
+`tags` 输出 1–6 个字符串。第一个必须从以下分类标签中选一个：在野利用、PoC/复现、漏洞通告、补丁/修复、供应链、攻击事件、利用技术、其他。
 
 其后可选 0–5 个适用标签，并且只能来自以下两个白名单：
 
 - 主题：RCE、提权、认证绕过、反序列化、注入、文件读写、SSRF、内存破坏、逻辑缺陷、免认证、无需交互、Linux、Windows、macOS、浏览器、Java、PHP、Python、Node.js、容器/K8s、网络设备、VPN/网关、中间件、数据库、云服务、AI/大模型
 - 实体：Microsoft、Google、Apple、Apache、Cisco、Fortinet、Ivanti、VMware、Atlassian、Oracle、WordPress、Jenkins、Kubernetes、Linux 内核、GitHub、CISA
 
-正文中即使明确出现了其他厂商，也不要把它们放进 `tags`。不要创造白名单之外的标签。没有适用的主题或实体时，只返回第一个分类标签；例如一条只讲治理政策的资料，不需要强行归到“RCE”。
+正文中即使明确出现了其他厂商，也不要把它们放进 `tags`。不要创造白名单之外的标签。没有适用的主题或实体时，只返回第一个分类标签；例如一条只讲某个利用手法的资料，不需要强行归到“RCE”。
 
 ## 候选阅读价值
 

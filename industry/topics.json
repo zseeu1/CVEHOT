@@ -133,7 +133,7 @@
       "entityId": "cisa",
       "tags": ["entity:cisa"],
       "definition": "美国 CISA 已知被利用漏洞清单的每一次新增，以及围绕它的补丁期限要求。",
-      "related": ["exploited", "incident", "policy"]
+      "related": ["exploited", "incident"]
     },
     {
       "slug": "rce",
@@ -237,7 +237,7 @@
       "group": "genre",
       "tags": ["漏洞通告", "补丁/修复"],
       "definition": "厂商与机构的正式通告：影响版本、修复版本与缓解措施。",
-      "related": ["github-advisories", "poc", "policy"]
+      "related": ["github-advisories", "poc"]
     },
     {
       "slug": "supply-chain",
@@ -245,7 +245,7 @@
       "group": "genre",
       "tags": ["供应链"],
       "definition": "依赖与构建链上的风险：恶意包、投毒、依赖混淆与发布凭证滥用。",
-      "related": ["github-advisories", "incident", "policy"]
+      "related": ["github-advisories", "incident"]
     },
     {
       "slug": "incident",
@@ -253,15 +253,7 @@
       "group": "genre",
       "tags": ["攻击事件"],
       "definition": "已经打进去的事件：勒索、数据泄露、供应链攻击与事后复盘。",
-      "related": ["exploited", "supply-chain", "policy"]
-    },
-    {
-      "slug": "policy",
-      "name": "政策与治理",
-      "group": "genre",
-      "tags": ["行业/政策"],
-      "definition": "漏洞治理的政策、法规与标准：披露规则、补丁期限与合规要求。",
-      "related": ["cisa-kev", "incident", "advisory"]
+      "related": ["exploited", "supply-chain"]
     }
   ]
 }

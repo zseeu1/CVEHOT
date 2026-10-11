@@ -58,7 +58,7 @@ async function report(r: Report): Promise<string> {
   });
   await sql`UPDATE articles SET discovered_at = ${r.at}, timeline_at = ${r.at}, grouped_at = now() WHERE id = ${articleId}`;
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, score, selected, subjects, tags)
-            VALUES (${articleId}, 1, 'rule', 'pass', ${r.category ?? "advisory"}, ${r.title}, ${`摘要 ${n}`}, ${r.score ?? 80}, ${r.selected ?? true}, ${r.subjects ?? []}, ${[r.category === "poc" ? "PoC/复现" : r.category === "exploited" ? "在野利用" : r.category === "supply-chain" ? "供应链" : r.category === "incident" ? "攻击事件" : r.category === "industry" ? "行业与政策" : "漏洞通告", ...(r.tags ?? [])]})`;
+            VALUES (${articleId}, 1, 'rule', 'pass', ${r.category ?? "advisory"}, ${r.title}, ${`摘要 ${n}`}, ${r.score ?? 80}, ${r.selected ?? true}, ${r.subjects ?? []}, ${[r.category === "poc" ? "PoC/复现" : r.category === "exploited" ? "在野利用" : r.category === "supply-chain" ? "供应链" : r.category === "incident" ? "攻击事件" : "漏洞通告", ...(r.tags ?? [])]})`;
   if (r.fact) await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${r.fact}, ${articleId}, 'report')`;
   await publishArticle(articleId, { releasedAt: new Date(r.at.getTime() + 60_000) });
   return articleId;
