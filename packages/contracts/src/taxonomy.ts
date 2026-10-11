@@ -38,11 +38,15 @@ export function isCategoryKey(value: unknown): value is CategoryKey {
 export const CHANNEL_KEYS = ["all", "news", "x", "firstParty"] as const;
 export type ChannelKey = (typeof CHANNEL_KEYS)[number];
 
+/**
+ * The feed's channel filter names. `firstParty` is the pack's `T1` tier; the label names what this
+ * site's T1 sources actually are — see docs/cve-pack.md.
+ */
 export const CHANNEL_LABELS: Record<ChannelKey, string> = {
   all: "全部",
   news: "资讯",
   x: "X",
-  firstParty: "一手",
+  firstParty: "权威源",
 };
 
 export function isChannelKey(value: unknown): value is ChannelKey {

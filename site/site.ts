@@ -197,7 +197,7 @@ export const REPORTS = {
    */
   entry: { measure: "件", noun: "大事" },
   /** 报头上其余几个数字后面的说法；精选数和日报期数在关于页、主题页也这样写。 */
-  metricUnits: { sourcesCount: "个来源", firstPartyEvents: "件一手发布", selectedCount: "条精选", reportsCovered: "期日报", exploited: "条在野利用" },
+  metricUnits: { sourcesCount: "个来源", firstPartyEvents: "件权威源报道", selectedCount: "条精选", reportsCovered: "期日报", exploited: "条在野利用" },
   /** 报告分享图上“共几条”的说法。 */
   shareUnit: "件大事",
   /** 日报时段内有资料经过评判、但没有新大事时的标题与导语。 */

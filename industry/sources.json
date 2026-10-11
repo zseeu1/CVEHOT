@@ -12,7 +12,6 @@
         }
       },
       "tier": "T1",
-      "first_party": true,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 30,
@@ -34,7 +33,6 @@
         }
       },
       "tier": "T1",
-      "first_party": true,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 30,
@@ -56,7 +54,6 @@
         }
       },
       "tier": "T1",
-      "first_party": true,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 120,
@@ -78,7 +75,6 @@
         }
       },
       "tier": "T2",
-      "first_party": false,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 60,
@@ -99,7 +95,6 @@
         }
       },
       "tier": "T2",
-      "first_party": false,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 120,
@@ -126,7 +121,6 @@
         "urlTemplate": "{raw:html_url}"
       },
       "tier": "T1",
-      "first_party": true,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 30,
@@ -156,7 +150,6 @@
         "urlTemplate": "https://nvd.nist.gov/vuln/detail/{cveID}"
       },
       "tier": "T1",
-      "first_party": true,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 120,
@@ -193,7 +186,6 @@
         }
       },
       "tier": "T2",
-      "first_party": false,
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 60,

@@ -45,7 +45,7 @@
 | --- | --- |
 | ![精选（深色）](docs/assets/shot-home-dark.png) | ![精选（浅色）](docs/assets/shot-home-light.png) |
 
-<p align="center"><sub>漏洞日报：每天一条头条加几条看点，报眼是当天的事数量、来源数和一手发布数。</sub></p>
+<p align="center"><sub>漏洞日报：每天一条头条加几条看点，报眼是当天的事数量、来源数和权威源报道数。</sub></p>
 
 | 深色 | 浅色 |
 | --- | --- |
