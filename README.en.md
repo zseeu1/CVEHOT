@@ -52,7 +52,7 @@ phone; a second row there picks the accent colour.
 
 Only the industry pack. The engine is upstream's.
 
-- `industry/sources.json`: eight vulnerability sources, plus a self-hosted push source `gh-poc-scan`
+- `industry/sources.json`: seven vulnerability sources, plus a self-hosted push source `gh-poc-scan`
 - `industry/taxonomy.ts`: categories rebuilt around exploit-in-the-wild, public PoC, vendor advisories and supply-chain poisoning
 - `industry/topics.json`: topics are vendors, components and vulnerability types
 - `industry/prompts/`: scoring and fact extraction rewritten for vulnerabilities
@@ -67,7 +67,7 @@ Only the industry pack. The engine is upstream's.
 
 `modules/cve-repo-index/` follows [unSafe.sh's CVE page](https://unsafe.sh/cve), which collects GitHub repositories mentioning a CVE in bulk and can therefore answer how many PoCs exist for a given identifier.
 
-Both of this project's existing mechanisms only look at repositories created in the last few days (`gh-poc-scan` and the `json-gh-new-cve-repos` source), so there is no historical depth. The index fills that gap. Rows go into its own `cve_repos` table, a lookup by identifier returns a definite number, and nothing feeds selection, grouping or the daily report. No model calls.
+This project's existing mechanism only looks at repositories created in the last few days (`gh-poc-scan`), so there is no historical depth. The index fills that gap. Rows go into its own `cve_repos` table, a lookup by identifier returns a definite number, and nothing feeds selection, grouping or the daily report. No model calls.
 
 The GitHub search API returns at most 1000 results per query, and slicing by month still truncates busy months. So besides time-sliced backfill there is `--lookup <CVE> --live`, which asks GitHub directly for a single identifier's authoritative count.
 

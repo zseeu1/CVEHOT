@@ -159,42 +159,6 @@
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
-    },
-    {
-      "id": "json-gh-new-cve-repos",
-      "name": "GitHub 新出现的 CVE 仓库",
-      "kind": "json_list",
-      "config": {
-        "url": "https://api.github.com/search/repositories?q=CVE-+in:name,description&sort=updated&order=desc&per_page=60",
-        "itemsPath": "items",
-        "titlePaths": [
-          "full_name"
-        ],
-        "summaryPaths": [
-          "description"
-        ],
-        "publishedAtPath": "created_at",
-        "externalIdPath": "id",
-        "urlTemplate": "{raw:html_url}",
-        "requireBoolean": {
-          "path": "fork",
-          "equals": false
-        },
-        "minNumeric": {
-          "path": "stargazers_count",
-          "min": 1
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "PoC",
-        "GitHub"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
     }
   ]
 }

@@ -6,6 +6,6 @@ import ghPocScan from "@aihot/gh-poc-scan/server";
 export const SERVER_MODULES: readonly ServerModule[] = [
   // 每天 05:20 给 GitHub CVE 仓库索引拉一次增量。
   cveRepoIndex,
-  // 每 30 分钟扫一次 GitHub 上新出现的 CVE 仓库并推给站里。
+  // 每小时扫一次 GitHub 上新出现的 CVE 仓库并推给站里（cron 在 modules/gh-poc-scan/server.ts）。
   ghPocScan,
 ];
