@@ -17,13 +17,13 @@ test("llms and sitemap build from current topic scope rather than a cached direc
   for (let i = 0; i < 20; i++) {
     const id = `${source}-${i}`;
     await sql`INSERT INTO articles (id,source_id,identity_key,url,title,timeline_at,discovered_at)
-      VALUES (${id},${source},${id},${`https://example.org/${id}`},'MiniMax',now(),now())`;
+      VALUES (${id},${source},${id},${`https://example.org/${id}`},'Kubernetes',now(),now())`;
     await sql`INSERT INTO publications (article_id,source_id,title,summary,url,timeline_at,discovered_at,sort_at,selected,eligible,visible_after,tags,channel,category)
-      VALUES (${id},${source},'MiniMax 发布模型','Summary',${`https://example.org/${id}`},now(),now(),now(),true,true,now() - interval '1 minute',ARRAY['entity:minimax'],'news','advisory')`;
+      VALUES (${id},${source},'Kubernetes 发布补丁','Summary',${`https://example.org/${id}`},now(),now(),now(),true,true,now() - interval '1 minute',ARRAY['entity:kubernetes'],'news','advisory')`;
   }
-  assert.equal((await topicPageCounts()).find((topic) => topic.slug === "minimax")!.indexable, true);
+  assert.equal((await topicPageCounts()).find((topic) => topic.slug === "kubernetes")!.indexable, true);
   await sql`UPDATE publications SET visibility = 'withdrawn' WHERE source_id = ${source}`;
-  assert.ok(!(await loadLlmsAvailability()).topics.some((topic) => topic.slug === "minimax"));
+  assert.ok(!(await loadLlmsAvailability()).topics.some((topic) => topic.slug === "kubernetes"));
   const sitemap = await app.inject("/sitemap.xml");
   assert.equal(sitemap.statusCode, 200);
   assert.ok(!sitemap.body.includes("/topics/minimax</loc>"));
