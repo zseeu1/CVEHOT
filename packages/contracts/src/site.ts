@@ -257,6 +257,8 @@ export interface StoryDetail {
   related: Array<StoryRef & { relation: "storyline" | "related" }>;
   /** The topics its reports belong to, most reports first. */
   topics: TopicLink[];
+  /** The site's modules' parts of the page, under their names; each module's web part draws its own. */
+  modules: Record<string, unknown>;
 }
 
 // Reports (daily / weekly / monthly)

@@ -149,6 +149,32 @@ test("selected identity delays show reader impact, recovery state and the affect
   }
 });
 
+// OpenRouter refuses a model by the region the call leaves from with a 403; the owner must not be sent
+// to top up an account that is fine. One refusal of another kind keeps the account alert.
+test("refusals for the caller's region are not reported as an unpaid or dead account", async () => {
+  const service = `test-region-${T}`;
+  const region = 'HTTP 403 {"error":{"message":"This model is not available in your region.","metadata":{"failed_routing_step":"Gate Endpoints with Geo Restrictions"}}}';
+  const refuse = async (error: string, n: number) => {
+    const [r] = await sql<{ id: number }[]>`INSERT INTO receipts(logical_key,service,purpose,status) VALUES(${`${service}-${tag()}`},${service},'score_article','failed') RETURNING id`;
+    for (let i = 1; i <= n; i++) await sql`INSERT INTO receipt_attempts(receipt_id,service,attempt,status,error) VALUES(${r!.id},${service},${i},'failed',${error})`;
+  };
+  const refusals = async () => (await collectFindings(Date.now())).filter((f) => f.key.endsWith(`.${service}`));
+  try {
+    await refuse(region, 3);
+    let found = await refusals();
+    assert.deepEqual(found.map((f) => f.key), [`provider.region.${service}`]);
+    assert.match(found[0]!.action!, /不是欠费/);
+    assert.doesNotMatch(found[0]!.title, /欠费/);
+
+    await refuse("HTTP 402 insufficient balance", 1);
+    found = await refusals();
+    assert.deepEqual(found.map((f) => f.key), [`provider.refused.${service}`]);
+  } finally {
+    await sql`DELETE FROM receipt_attempts WHERE service = ${service}`;
+    await sql`DELETE FROM receipts WHERE service = ${service}`;
+  }
+});
+
 test("the ops digest does not describe unknown paid work as harmless or already retried", async () => {
   const lines: string[] = [];
   const log = console.log;

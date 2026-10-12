@@ -156,6 +156,14 @@ export interface TopicPageAsk {
   now: Date;
 }
 
+/** What a story page asks a module's part of it (publication/stories.ts loadStoryDetail). */
+export interface StoryPageAsk {
+  title: string;
+  /** Its public reports, newest first. */
+  reports: ReadonlyArray<{ title: string; summary: string | null }>;
+  now: Date;
+}
+
 /** A reminder in a JSON answer, as its top-level `notice`. */
 export interface JsonNotice {
   notice: object;
@@ -235,6 +243,15 @@ export interface ServerModule {
   /** Its share of the daily retention run (operations/retention.ts): what it deleted or aggregated. */
   retention?: (now: Date) => Promise<Record<string, unknown>>;
   on?: Partial<EngineHooks>;
+  /** Story pages (publication/stories.ts loadStoryDetail). */
+  stories?: {
+    /**
+     * Its part of a story page, under its name in StoryDetail.modules; its web module draws it. Read from the
+     * story's public reports as the page shows them, so a withdrawn report no longer counts. Null when it has
+     * nothing for this story.
+     */
+    page: (story: StoryPageAsk) => Promise<unknown>;
+  };
   /** Topic pages (publication/topics.ts). */
   topics?: {
     /**

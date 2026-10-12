@@ -238,15 +238,33 @@ export const providerStops = (service: string) => {
 };
 export const providerConsole = (service: string) => PROVIDERS[service]?.where ?? `${service} 后台`;
 
-/** Paid services that refuse us (no balance, a dead key), and daily budgets used up. */
+/** A refusal for where the call comes from (OpenRouter: "not available in your region", "Geo Restrictions"), not for the account. */
+const REGION_REFUSAL = "(not available in your region|unsupported_country|country.{0,20}not supported|region.{0,20}not supported|geo.?restrict)";
+
+/** Paid services that refuse us (no balance, a dead key, or the region the calls come from), and daily budgets used up. */
 async function providerFindings(): Promise<Finding[]> {
   const out: Finding[] = [];
-  const refused = await sql<{ service: string; n: number; last: string }[]>`
-    SELECT service, count(*)::int AS n, (array_agg(left(error, 200) ORDER BY started_at DESC))[1] AS last FROM receipt_attempts
+  const refused = await sql<{ service: string; n: number; last: string; regional: boolean }[]>`
+    SELECT service, count(*)::int AS n, (array_agg(left(error, 200) ORDER BY started_at DESC))[1] AS last,
+           bool_and(error ~* ${REGION_REFUSAL}) AS regional FROM receipt_attempts
     WHERE status = 'failed' AND started_at > now() - interval '1 hour'
       AND error ~* '(HTTP 40[123]\\M|insufficient|balance|arrear|good standing|欠费|余额)'
     GROUP BY 1 HAVING count(*) >= 3`;
   for (const p of refused) {
+    if (p.regional) {
+      // Every refusal named the region: the account is fine, the address the calls leave from is not.
+      out.push({
+        key: `provider.region.${p.service}`,
+        level: "today",
+        owner: true,
+        title: `${providerName(p.service)} 不对这台服务器所在的地区提供服务`,
+        impact: providerStops(p.service),
+        heals: "出口换到它支持的地区后会",
+        action: `不是欠费，不用充值：把这台服务器访问${providerName(p.service)}的出口换到它支持的地区（比如代理节点），或者把用它的步骤换成别的模型`,
+        detail: `最近 1 小时被拒 ${p.n} 次：${p.last}`,
+      });
+      continue;
+    }
     out.push({
       key: `provider.refused.${p.service}`,
       level: "today",

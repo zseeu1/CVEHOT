@@ -18,8 +18,11 @@ import { Select } from "../components/ui/Controls";
 import { IconArrowLeft, IconChevronRight, IconClock, IconDoc, IconUsers } from "../components/icons";
 import { PhoneBar } from "../components/shell/PhoneBar";
 import type { Screen } from "../components/shell/screens";
+import { loadParts } from "../site-modules";
 
 export const handle: Screen = { home: "hot" };
+
+const PARTS = await loadParts((m) => m.storyPage);
 export { pageHeaders as headers } from "../lib/api.server";
 export const { clientLoader, shouldRevalidate } = pageReuse<typeof loader>();
 
@@ -406,6 +409,7 @@ export default function StoryPage() {
               </p>
             </RailCard>
           )}
+          {PARTS.map(({ name, part }) => (story.modules[name] !== undefined ? <part.Rail key={name} data={story.modules[name]} /> : null))}
           {story.officialReports.length > 0 && (
             <RailCard title="权威源" right={`${counts.official || story.officialReports.length} 篇`}>
               <p className="text-[12px] text-ink-4">来自漏洞登记与公告库的报道</p>

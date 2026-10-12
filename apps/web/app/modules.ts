@@ -113,6 +113,12 @@ export interface TopicPagePart {
   news: (data: unknown) => string[];
 }
 
+/** A module's part of a story page (routes/story.tsx), from what its server module's stories.page returned for it. */
+export interface StoryPagePart {
+  /** A card in the page's side rail, after 为什么热. */
+  Rail: ComponentType<{ data: unknown }>;
+}
+
 export interface WebModule {
   /** Its folder under modules/. */
   name: string;
@@ -147,6 +153,7 @@ export interface WebModule {
   };
   agent?: Part<AgentPart>;
   topicPage?: Part<TopicPagePart>;
+  storyPage?: Part<StoryPagePart>;
   /** Paths of the marks it serves that are drawn in white, for a dark tile (components/BrandMark.tsx). */
   darkMarks?: string[];
   /** The starred page (routes/starred.tsx): buttons ahead of 导入文件 that bring stars in from elsewhere, each resolving to the line it reports. */
