@@ -61,22 +61,23 @@
 
 只动行业部分，引擎没改。
 
-- `industry/sources.json` 换成 7 个漏洞信源，另有自建推送源 `gh-poc-scan`
-- `industry/taxonomy.ts` 分类换成漏洞视角，在野利用、公开 PoC，还有厂商通告和供应链投毒
+- `industry/sources.json` 7 个漏洞信源（GitHub 安全公告、CVE 官方记录、PoC 仓库、供应链投毒、CISA 在野利用清单等）
+- `industry/taxonomy.ts` 分类按漏洞视角：在野利用、公开 PoC、厂商通告、供应链投毒
 - `industry/topics.json` 主题换成厂商、组件和漏洞类型
 - `industry/prompts/` 评分和事实抽取按漏洞视角重写，加了「不得由『高危』推断『在野利用』」这类硬规则
 - `industry/selection.ts` 入选门槛按漏洞情报的分布重设
 - `site/site.ts` 站名、行业词、首页和关于页文案，报眼多了一项「条在野利用」
 - `site/brand/` 换成自己的图标
-- `modules/cve-repo-index/` 新增，查某个编号到现在有多少个 PoC 仓库
-- `modules/gh-poc-scan/` 新增，定时扫 GitHub 上新出现的 CVE 仓库，推给站里
+- `modules/cve-repo-index/` 扫 GitHub 上提到 CVE 的仓库建索引，同时作为推送源参与热度加权，在条目页显示「N 个 PoC 仓库」
 - 判断类的那四个步骤（预筛、评分、归组、归组复核）可以交给 [Jev](https://openrouter.ai/~typesafe/jev-latest)，它只回类型化答案和概率、不写文字；没配 key 时仍走默认模型
 
 ## 借鉴
 
 `modules/cve-repo-index/` 参考 [unSafe.sh 的 CVE 页](https://unsafe.sh/cve)：它把 GitHub 上提到 CVE 的仓库整批收下来，能回答「某个编号到现在一共有多少个 PoC」。
 
-这个项目原有的机制只看最近几天**新出现**的仓库（`gh-poc-scan`），没有历史纵深。索引补的是这一块：结果进自己的表 `cve_repos`，按编号查得到一个明确数字，不进精选、归组和日报，零模型调用。
+这个项目原有的机制只看最近几天**新出现**的仓库，没有历史纵深。这个模块现在补的是两部分：
+- **历史索引** — 按月切片扫描 GitHub，结果进自己的表 `cve_repos`，按编号查得到一个明确数字，不进精选、归组和日报，零模型调用
+- **热度信号** — 接收新出现的 PoC 仓库作为推送源，参与热度加权，并在条目页显示该 CVE 的仓库总数
 
 GitHub 搜索单查询最多返回 1000 条，按月切片在繁忙月份一样会截断。所以除了时间切片，还提供 `--lookup <编号> --live`，直接问 GitHub 要单个编号的权威数量。
 
@@ -113,7 +114,7 @@ docker compose up -d --build
 
 ### 配 GITHUB_TOKEN
 
-信源里有走 GitHub 的接口（安全公告库），`gh-poc-scan` 模块用的搜索接口未认证时每分钟只给 10 次请求，配个 token 会稳很多，背填 CVE 索引也快。
+信源里有走 GitHub 的接口（安全公告库），CVE 仓库索引用的搜索接口未认证时每分钟只给 10 次请求，配个 token 会稳很多，背填 CVE 索引也快。
 
 1. 打开 <https://github.com/settings/tokens/new>
 2. Note 随便填，Expiration 选个期限，勾 **`public_repo`**（只需要读公开仓库）

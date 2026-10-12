@@ -59,15 +59,16 @@ Only the industry pack. The engine is upstream's.
 - `industry/selection.ts`: selection thresholds retuned for vulnerability intelligence
 - `site/site.ts`: site name, wording, home and about copy
 - `site/brand/`: own icons
-- `modules/cve-repo-index/`: new, how many PoC repositories exist for a given CVE
-- `modules/gh-poc-scan/`: new, periodically scans GitHub for new CVE repositories
+- `modules/cve-repo-index/`: scans GitHub for repositories mentioning CVEs and builds an index, serves as a heat signal source for weighting and displays "N PoC repositories" on story pages
 - the four judging steps (filtering, scoring, grouping, group review) can be handed to [Jev](https://openrouter.ai/~typesafe/jev-latest), which returns typed answers and probabilities rather than text; without a key they keep using the default model
 
 ## Credit
 
 `modules/cve-repo-index/` follows [unSafe.sh's CVE page](https://unsafe.sh/cve), which collects GitHub repositories mentioning a CVE in bulk and can therefore answer how many PoCs exist for a given identifier.
 
-This project's existing mechanism only looks at repositories created in the last few days (`gh-poc-scan`), so there is no historical depth. The index fills that gap. Rows go into its own `cve_repos` table, a lookup by identifier returns a definite number, and nothing feeds selection, grouping or the daily report. No model calls.
+This project's existing mechanism only looks at repositories created in the last few days, with no historical depth. This module now covers both:
+- **Historical index** — scans GitHub sliced by month, stores results in its own `cve_repos` table; a lookup by identifier returns a definite number, nothing feeds selection, grouping or the daily report, zero model calls
+- **Heat signal** — receives newly created PoC repositories as a push source, weights them into heat calculations, and displays the total repository count for a CVE on story pages
 
 The GitHub search API returns at most 1000 results per query, and slicing by month still truncates busy months. So besides time-sliced backfill there is `--lookup <CVE> --live`, which asks GitHub directly for a single identifier's authoritative count.
 
@@ -104,7 +105,7 @@ Open <http://localhost:3000>. Admin is at `/admin`; the password is `ADMIN_PASSW
 
 ### Set up GITHUB_TOKEN
 
-A few sources use the GitHub API (security advisories, new CVE repositories). Unauthenticated search allows 10 requests per minute; a token keeps them steady and makes backfilling the CVE index much faster.
+A few sources use the GitHub API (security advisories, CVE repository index). Unauthenticated search allows 10 requests per minute; a token keeps them steady and makes backfilling the CVE index much faster.
 
 1. Open <https://github.com/settings/tokens/new>
 2. Any note will do, pick an expiration, tick **`public_repo`** (read access is all that is needed)
