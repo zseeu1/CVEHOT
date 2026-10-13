@@ -60,6 +60,7 @@ test("editorial heat follows factual membership; signal-only evidence survives w
   await signal(s, await source('independent-signal', {mode:'hot_signal'}), 1, {role:null,kind:'signal',standalone:true});
   await signal(s, await source('independent-report'), 1, {standalone:true});
   const before = await rowOf(s);
+  // 新口径：只要 editorial_participants >= 1 就在榜上（曾是需要 ≥2 参与者）
   assert.deepEqual([Number(before?.participants),Number(before?.editorial_participants),Number(before?.signal_participants)],[2,1,1]);
   const moved = await story();
   await sql`UPDATE facts SET story_id=${moved} WHERE id IN (SELECT fact_id FROM fact_articles WHERE article_id=${report})`;
@@ -155,4 +156,29 @@ test("an hour taken again updates the cohort after a source changes role", async
   const rows = await sql`SELECT participants, cohort FROM story_heat_hourly WHERE story_id = ${s}`;
   assert.ok(rows.length > 0);
   assert.ok(rows.every(r => r.participants === 1 && r.cohort === 0));
+});
+
+test("priority scoring: single-source exploited event ranks above multi-source fresh event", async () => {
+  // 新口径验证：单个权威源、标题含「在野利用」的事件，应该排在多源、新鲜但没有信号的事件之前
+  const exploited = await story();
+  const s1 = await source('t1-1');
+  await sql`UPDATE sources SET tier='T1' WHERE id=${s1}`;
+  await signal(exploited, s1, 1);
+  // 标题含在野利用
+  await sql`UPDATE stories SET title='CVE-XXXX 在野利用' WHERE id=${exploited}`;
+
+  const multi = await story();
+  const s2 = await source('t2-1');
+  const s3 = await source('t2-2');
+  await signal(multi, s2, 0.5); // 刚发现
+  await signal(multi, s3, 0.5);
+
+  const rows = await heatRows(AT);
+  const exploitedRow = rows.find(r => Number(r.story_id) === exploited)!;
+  const multiRow = rows.find(r => Number(r.story_id) === multi)!;
+
+  assert.ok(exploitedRow.has_exploited, "exploited event should have has_exploited=true");
+  assert.equal(multiRow.has_exploited, false, "multi-source event should have has_exploited=false");
+  // 在新的计分下，has_exploited 单独就能给 40 分，足以超过多个低等级来源的新鲜度
+  assert.ok(Number(exploitedRow.t1_source_count) >= 1, "exploited should have at least one T1 source");
 });

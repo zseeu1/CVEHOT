@@ -54,10 +54,18 @@ export async function storedHotRanking(db: Db = sql): Promise<HotRanking | null>
   return { id: row.id, computedAt: row.computed_at.toISOString(), ruleVersion: row.rule_version, entries: row.entries, coverage: row.evidence };
 }
 
-export const HOT_RULE_VERSION = "heat-v1-48h-halflife24h";
+export const HOT_RULE_VERSION = "vuln-v1-48h-priority";
 const WINDOW_HOURS = 48;
 const HALF_LIFE_HOURS = 24;
-const MIN_PARTICIPANTS = 2;
+
+// 处置优先级计分公式权重
+const PRIORITY_WEIGHTS = {
+  exploited: 40,      // 已在野利用
+  hasPoc: 25,         // 已有公开 PoC
+  authoritySourcesMax: 15, // min(T1源数, 3) × 5
+  freshness: 30,      // 30 × (1 − 事件龄 / 48h)
+  selectedScore: 10,  // 可选：min(精选分 / 90, 1) × 10
+} as const;
 
 interface HeatRow {
   story_id: number;
@@ -78,6 +86,11 @@ interface HeatRow {
   recent6h: number;
   editorial_participants: number;
   signal_participants: number;
+  // 新增字段：计分用
+  has_exploited: boolean;    // 是否已在野利用（CISA KEV 或标题含关键词）
+  has_poc: boolean;          // 是否已有公开 PoC（相关源或标题含关键词）
+  t1_source_count: number;   // 权威源（T1）数量
+  max_selected_score: number | null; // 该事件下报道的最高精选分
 }
 
 interface SourceClock {
@@ -171,7 +184,14 @@ export async function heatRows(at: Date, behind: string[] = [], storyIds?: numbe
       HAVING count(*) FILTER (WHERE last_at IS NOT NULL) > 0
     )
     SELECT a.story_id, st.public_id::text AS public_id, st.title, st.first_report_at, st.latest_at,
-           a.participants, a.heat, a.heat_prev, a.heat_obs, a.heat_prev_obs, a.behind_participants, a.uncomparable, a.recent6h, a.editorial_participants, a.signal_participants
+           a.participants, a.heat, a.heat_prev, a.heat_obs, a.heat_prev_obs, a.behind_participants, a.uncomparable, a.recent6h, a.editorial_participants, a.signal_participants,
+           -- 新增字段
+           (st.title ILIKE '%在野利用%' OR st.title ILIKE '%已被利用%' OR st.title ILIKE '%已遭利用%'
+            OR EXISTS (SELECT 1 FROM story_signals ss WHERE ss.story_id = a.story_id AND ss.source_id = 'json-cisa-kev')) AS has_exploited,
+           (st.title ILIKE '%PoC%' OR st.title ILIKE '%复现%'
+            OR EXISTS (SELECT 1 FROM story_signals ss JOIN sources s ON s.id = ss.source_id WHERE ss.story_id = a.story_id AND s.id = ANY(ARRAY['gh-poc-scan', 'rss-poc-in-github', 'rss-trickest-cve']::text[]))) AS has_poc,
+           (SELECT count(DISTINCT s.id) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id JOIN sources s ON s.id = p.source_id WHERE f.story_id = a.story_id AND s.tier = 'T1') AS t1_source_count,
+           (SELECT max(p.score) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id WHERE f.story_id = a.story_id AND p.selected) AS max_selected_score
     FROM agg a JOIN stories st ON st.id = a.story_id
     WHERE st.merged_into IS NULL`;
 }
@@ -180,10 +200,38 @@ export function heatIndex(heat: number): number {
   return Math.round(heat * 100) / 10; // one decimal on the 10× scale shown to readers
 }
 
+/**
+ * 计算事件的处置优先级分数（0-100）
+ * 公式：40×在野利用 + 25×PoC + 5×min(T1源数,3) + 30×(1−事件龄/48h) + 10×min(精选分/90,1)
+ */
+function computePriorityScore(row: HeatRow, now: Date): number {
+  const ageHours = (now.getTime() - (row.latest_at?.getTime() ?? now.getTime())) / 3600_000;
+  const freshnessScore = Math.max(0, PRIORITY_WEIGHTS.freshness * (1 - ageHours / WINDOW_HOURS));
+  const t1Score = Math.min(row.t1_source_count, 3) * 5;
+  const selectedScore = row.max_selected_score ? PRIORITY_WEIGHTS.selectedScore * Math.min(row.max_selected_score / 90, 1) : 0;
+
+  const score =
+    (row.has_exploited ? PRIORITY_WEIGHTS.exploited : 0) +
+    (row.has_poc ? PRIORITY_WEIGHTS.hasPoc : 0) +
+    t1Score +
+    freshnessScore +
+    selectedScore;
+
+  return Math.round(score * 10) / 10; // 一位小数
+}
+
 export async function computeHotRanking(at = new Date()): Promise<{ id: number; entries: number }> {
   const behind = behindSources(await sourceClocks(), at.getTime(), true);
-  const rows = (await heatRows(at, behind)).filter((r) => Number(r.participants) >= MIN_PARTICIPANTS && Number(r.editorial_participants) >= 1);
-  rows.sort((a, b) => Number(b.heat) - Number(a.heat) || (b.latest_at?.getTime() ?? 0) - (a.latest_at?.getTime() ?? 0));
+  // 改为：48h 内至少有 1 个 editorial 参与者（而不是需要 ≥2 个独立参与者）
+  const rows = (await heatRows(at, behind)).filter((r) => Number(r.editorial_participants) >= 1);
+
+  // 按处置优先级分数排序
+  rows.sort((a, b) => {
+    const scoreA = computePriorityScore(a, at);
+    const scoreB = computePriorityScore(b, at);
+    if (scoreB !== scoreA) return scoreB - scoreA; // 降序
+    return (b.latest_at?.getTime() ?? 0) - (a.latest_at?.getTime() ?? 0); // 同分则按最新时间
+  });
 
   const entries: HotEntry[] = [];
   for (const r of rows) {
@@ -228,12 +276,13 @@ export async function computeHotRanking(at = new Date()): Promise<{ id: number; 
     if (isNew) badges.push("new");
     if (!surge && pct !== null && pct > 0.15) badges.push("rising");
     const sourceNames = [...new Set(reporting.map((x) => x.name))].slice(0, 8);
+    const priorityScore = computePriorityScore(r, at);
     entries.push({
       rank: entries.length + 1,
       storyId: r.story_id,
       storyPublicId: r.public_id,
       title: r.title,
-      heat,
+      heat: Math.round(priorityScore), // 用处置优先级分数替代热度
       trend: prevAll <= 0 ? "new" : pct === null ? "unknown" : pct > 0.1 ? "up" : pct < -0.1 ? "down" : "flat",
       trendPct: pct === null ? null : Math.round(pct * 1000) / 10,
       badges,
@@ -253,10 +302,17 @@ export async function computeHotRanking(at = new Date()): Promise<{ id: number; 
         .slice(0, 40).map(({ name, kind, tier }) => ({ name, kind, tier })),
     });
   }
+  const priorityDetails = rows.slice(0, entries.length).map((r) => ({
+    story_id: r.story_id,
+    exploited: r.has_exploited,
+    hasPoc: r.has_poc,
+    t1Sources: r.t1_source_count,
+    priorityScore: computePriorityScore(r, at),
+  }));
   const [row] = await sql<{ id: number }[]>`
     INSERT INTO hot_rankings (computed_at, rule_version, entries, evidence, published)
     VALUES (${at}, ${HOT_RULE_VERSION}, ${sql.json(entries as never)},
-            ${sql.json({ windowHours: WINDOW_HOURS, halfLifeHours: HALF_LIFE_HOURS, minParticipants: MIN_PARTICIPANTS, candidates: rows.length } as never)}, true)
+            ${sql.json({ windowHours: WINDOW_HOURS, halfLifeHours: HALF_LIFE_HOURS, candidates: rows.length, priorityWeights: PRIORITY_WEIGHTS, topEntries: priorityDetails } as never)}, true)
     RETURNING id`;
   // Keep a bounded history of rankings.
   await sql`DELETE FROM hot_rankings WHERE computed_at < now() - interval '30 days'`;
