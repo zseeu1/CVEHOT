@@ -156,6 +156,32 @@ test("a native timeout fails its job with the receipt id, and the release wakes 
   assert.equal((await boss.fetch(QUEUES.group)).length, 0, "successful work is not repeatedly queued");
 });
 
+test("a spent budget leaves grouping pending and the repair sweep resumes it", async () => {
+  const id = await report("budget-wait");
+  const budgets = await sql`SELECT service,per_minute,per_hour,per_day FROM budgets`;
+  const hits = provider.hits();
+  try {
+    await sql`UPDATE budgets SET per_minute=0,per_hour=0,per_day=0`;
+    await assert.rejects(groupArticle(id), /Budget for .* exhausted/);
+    const [row] = await sql`SELECT grouping_status,grouping_receipt_id FROM articles WHERE id=${id}`;
+    assert.equal(row!.grouping_status, "pending");
+    assert.equal(row!.grouping_receipt_id, null);
+    assert.equal(provider.hits(), hits, "no model request is sent while waiting for budget");
+  } finally {
+    for (const b of budgets) await sql`UPDATE budgets SET per_minute=${b.per_minute},per_hour=${b.per_hour},per_day=${b.per_day} WHERE service=${b.service}`;
+  }
+  await sql`UPDATE articles SET created_at=now()-interval '5 minutes' WHERE id=${id}`;
+  assert.equal((await sweepUngrouped()).enqueued, 1);
+  assert.equal((await sweepUngrouped()).enqueued, 0);
+  const boss = await getBoss();
+  const jobs = await boss.fetch(QUEUES.group);
+  assert.equal(jobs.length, 1);
+  assert.equal((jobs[0]!.data as { articleId: string }).articleId, id);
+  await groupArticle(id);
+  await boss.complete(QUEUES.group, jobs[0]!.id);
+  assert.equal((await sql`SELECT grouping_status FROM articles WHERE id=${id}`)[0]!.grouping_status, "complete");
+});
+
 test("a lost pending grouping job is repaired once, but a terminal failure waits for recovery", async () => {
   const pending = await report("lost");
   const failed = await report("terminal");
