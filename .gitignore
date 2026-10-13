@@ -19,5 +19,4 @@ fontsource-noto-sans-sc-*.tgz
 .goutputstream-*
 *.swp
 
-# 项目变更日志：记每天改了什么、踩过哪些坑，只留本地，不上传 GitHub
 log.md
