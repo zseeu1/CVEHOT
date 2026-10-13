@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { heatRows, snapshotHeat } from "@aihot/backend/events/hot";
+import { computePriorityScore, heatRows, snapshotHeat } from "@aihot/backend/events/hot";
 
 const T = `hot-${tag()}`;
 const AT = new Date("2099-03-01T12:00:00Z");
@@ -179,6 +179,10 @@ test("priority scoring: single-source exploited event ranks above multi-source f
 
   assert.ok(exploitedRow.has_exploited, "exploited event should have has_exploited=true");
   assert.equal(multiRow.has_exploited, false, "multi-source event should have has_exploited=false");
-  // 在新的计分下，has_exploited 单独就能给 40 分，足以超过多个低等级来源的新鲜度
+  // 在新口径下，has_exploited 单独就给 40 分，足以超过多个低等级来源的新鲜度；分数本身也要比出来。
   assert.ok(Number(exploitedRow.t1_source_count) >= 1, "exploited should have at least one T1 source");
+  const exploitedScore = computePriorityScore(exploitedRow, AT);
+  const multiScore = computePriorityScore(multiRow, AT);
+  assert.ok(exploitedScore > multiScore, `exploited ${exploitedScore} must outrank a fresher multi-source event ${multiScore}`);
+  assert.ok(exploitedScore <= 100 && multiScore >= 0, "the score stays on a 0-100 scale");
 });

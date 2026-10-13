@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import type { HotStripEntry } from "@aihot/contracts/site";
-import { IconArrowRight, IconMinus, IconTrendDown, IconTrendUp } from "../../components/icons";
+import { IconArrowRight } from "../../components/icons";
 import { Faces } from "../hot/Faces";
 
 // As on the original list: the top three in the ranking colours at the heaviest weight.
@@ -10,19 +10,10 @@ function hrefOf(e: HotStripEntry): string {
   return e.storyPublicId ? `/story/${e.storyPublicId}` : e.itemId ? `/items/${e.itemId}` : "/hot";
 }
 
-/** Where the heat is heading, as a small arrow (a "新" mark for a story new to the ranking). */
-function TrendMark({ trend }: { trend: HotStripEntry["trend"] }) {
-  if (trend === "up") return <IconTrendUp size={14} strokeWidth={2.2} className="text-hot" aria-label="热度上升" />;
-  if (trend === "down") return <IconTrendDown size={14} strokeWidth={2.2} className="text-ink-4" aria-label="热度回落" />;
-  if (trend === "new") return <span className="rounded-full bg-accent-soft px-1.5 text-[10.5px] font-semibold leading-4 text-accent">新</span>;
-  if (trend === "unknown") return null; // sources behind on collection: no comparison to show
-  return <IconMinus size={14} strokeWidth={2.2} className="text-ink-4" aria-label="热度持平" />;
-}
-
 /**
  * The top of the hot ranking on the home page, kept quiet: a live dot, coloured ranks and titles, then
- * columns of fixed width so every row lines up — who is talking (精选组 faces, from sm), "N 热度" and an arrow for
- * where it is heading. The whole row lights up on hover. Phones show the top three in one line each, so
+ * columns of fixed width so every row lines up — who is covering it (精选组 faces, from sm) and the
+ * handling priority. The whole row lights up on hover. Phones show the top three in one line each, so
  * the feed starts on the first screen.
  */
 export function HotTopics({ entries }: { entries: HotStripEntry[] }) {
@@ -49,20 +40,15 @@ export function HotTopics({ entries }: { entries: HotStripEntry[] }) {
           <li key={e.rank} className={i >= 3 ? "max-sm:hidden" : undefined}>
             <Link viewTransition
               to={hrefOf(e)}
-              className="group -mx-2 grid min-h-10 sm:min-h-0 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-tile px-2 py-1.5 transition-colors hover:bg-bg-sunk/70 active:bg-bg-sunk sm:grid-cols-[20px_minmax(0,1fr)_120px_64px_20px] sm:gap-x-4 sm:py-2 dark:hover:bg-bg-muted/40"
+              className="group -mx-2 grid min-h-10 sm:min-h-0 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-tile px-2 py-1.5 transition-colors hover:bg-bg-sunk/70 active:bg-bg-sunk sm:grid-cols-[20px_minmax(0,1fr)_120px_64px] sm:gap-x-4 sm:py-2 dark:hover:bg-bg-muted/40"
             >
               <span className={`num text-center leading-none ${RANK_COLOR[i] ?? "text-[14px] font-bold text-rank-rest"}`}>{e.rank}</span>
               <span className="line-clamp-1 min-w-0 text-[14.5px] font-semibold leading-[1.5] text-ink transition-colors group-hover:text-accent lg:text-[14px]">{e.title}</span>
               <span className="hidden justify-end sm:flex">
                 <Faces participants={e.participants} total={e.participantCount} size={20} interactive={false} />
               </span>
-              <span className="flex items-center justify-end gap-2.5 sm:contents">
-                <span className="whitespace-nowrap text-right text-[12.5px] text-ink-4" title="热度指数">
-                  <span className="num text-[13.5px] font-semibold text-ink-2">{Math.round(e.heat)}</span> 热度
-                </span>
-                <span className="flex w-5 justify-center">
-                  <TrendMark trend={e.trend} />
-                </span>
+              <span className="whitespace-nowrap text-right text-[12.5px] text-ink-4" title="处置优先级">
+                <span className="num text-[13.5px] font-semibold text-ink-2">{Math.round(e.heat)}</span> 分
               </span>
             </Link>
           </li>

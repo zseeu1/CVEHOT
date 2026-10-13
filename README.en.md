@@ -23,7 +23,7 @@ industry was changed from AI news to vulnerability intelligence.
 
 Sources are the GitHub Security Advisories, cvelistV5, CISA KEV, the OpenSSF malicious-packages
 dataset, and new CVE repositories on GitHub. New vulnerabilities and incidents get a headline and a
-summary, are grouped under their CVE identifier, ranked by heat, and compiled into a daily report.
+summary, are grouped under their CVE identifier, ranked by handling priority, and compiled into a daily report.
 
 - Upstream: <https://github.com/KKKKhazix/AIHOT>
 - License: MIT, © 2026 数字生命卡兹克, see [LICENSE](LICENSE)
@@ -59,7 +59,7 @@ Only the industry pack. The engine is upstream's.
 - `industry/selection.ts`: selection thresholds retuned for vulnerability intelligence
 - `site/site.ts`: site name, wording, home and about copy
 - `site/brand/`: own icons
-- `modules/cve-repo-index/`: scans GitHub for repositories mentioning CVEs and builds an index, serves as a heat signal source for weighting and displays "N PoC repositories" on story pages
+- `modules/cve-repo-index/`: scans GitHub for repositories mentioning CVEs and builds an index, serves as a priority signal source for weighting and displays "N PoC repositories" on story pages
 - the four judging steps (filtering, scoring, grouping, group review) can be handed to [Jev](https://openrouter.ai/~typesafe/jev-latest), which returns typed answers and probabilities rather than text; without a key they keep using the default model
 
 ## Credit
@@ -68,7 +68,7 @@ Only the industry pack. The engine is upstream's.
 
 This project's existing mechanism only looks at repositories created in the last few days, with no historical depth. This module now covers both:
 - **Historical index** — scans GitHub sliced by month, stores results in its own `cve_repos` table; a lookup by identifier returns a definite number, nothing feeds selection, grouping or the daily report, zero model calls
-- **Heat signal** — receives newly created PoC repositories as a push source, weights them into heat calculations, and displays the total repository count for a CVE on story pages
+- **Priority signal** — receives newly created PoC repositories as a push source, weights them into the priority score, and displays the total repository count for a CVE on story pages
 
 The GitHub search API returns at most 1000 results per query, and slicing by month still truncates busy months. So besides time-sliced backfill there is `--lookup <CVE> --live`, which asks GitHub directly for a single identifier's authoritative count.
 

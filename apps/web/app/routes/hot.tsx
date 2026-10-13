@@ -1,7 +1,7 @@
 import { useLoaderData } from "react-router";
 import { IntentLink } from "../components/ui/IntentLink";
 import type { HotEntryView, HotResponse } from "@aihot/contracts/site";
-import { subjectAfter, withSubject } from "@aihot/site";
+import { withSubject } from "@aihot/site";
 import { cachedPage, loadOr404 } from "../lib/api.server";
 import { pageReuse } from "../lib/page-reuse";
 import { pageMeta } from "../lib/seo";
@@ -11,7 +11,6 @@ import { EmptyState } from "../components/ui/Page";
 import { IconChevronDown, IconInfo } from "../components/icons";
 import { Sparkline } from "../features/hot/Sparkline";
 import { Faces } from "../features/hot/Faces";
-import { Delta } from "../features/hot/Delta";
 import { PhoneBar } from "../components/shell/PhoneBar";
 import type { Screen } from "../components/shell/screens";
 
@@ -26,16 +25,16 @@ export async function loader({ request }: { request: Request }) {
 export function meta() {
   return pageMeta({
     title: withSubject("热点榜"),
-    description: `${subjectAfter("过去 48 小时", "圈")}讨论最多的 10 个事件：热度指数、趋势与组成热度的公开来源。`,
+    description: "过去 48 小时最该处置的 10 个漏洞：按在野利用、公开 PoC、权威源收录与新鲜度排序。",
     path: "/hot",
     image: "/og/pages/hot.png",
   });
 }
 
 const BADGES: Record<HotEntryView["badges"][number], { label: string; tone: "hot" | "accent" | "amber"; hint: string }> = {
-  surge: { label: "爆", tone: "hot", hint: "讨论快速增加" },
+  surge: { label: "密集", tone: "hot", hint: "最近 6 小时多家来源同时更新" },
   new: { label: "新", tone: "accent", hint: "首报 6 小时内" },
-  rising: { label: "发酵中", tone: "amber", hint: "讨论仍在增加" },
+  rising: { label: "发酵中", tone: "amber", hint: "覆盖来源比 6 小时前更多" },
 };
 
 const RANK_COLOR = ["text-rank-1", "text-rank-2", "text-rank-3"];
@@ -103,7 +102,7 @@ function HeatPanel({ e }: { e: HotEntryView }) {
   );
 }
 
-/** No. 1: the event people are talking about most, with its picture, digest, latest turn and day of heat. */
+/** No. 1: the event that ranks highest by handling priority, with its picture, digest and latest turn. */
 function Lead({ e }: { e: HotEntryView }) {
   const panel = !e.cover && e.spark.filter((v) => v !== null).length >= 3;
   return (
@@ -111,7 +110,6 @@ function Lead({ e }: { e: HotEntryView }) {
       <div className="flex items-center gap-2.5">
         <span className={`mono text-[12px] font-bold tracking-[0.16em] ${rankColor(e.rank)}`}>NO.{pad(e.rank)}</span>
         <Badges e={e} />
-        <Delta trend={e.trend} pct={e.trendPct} className="ml-auto" />
       </div>
       <div className={`mt-4 grid gap-5 ${e.cover || panel ? "xl:grid-cols-[minmax(0,1fr)_minmax(0,0.72fr)] xl:gap-7" : ""}`}>
         <div className="min-w-0">
@@ -148,7 +146,7 @@ function Lead({ e }: { e: HotEntryView }) {
           {!panel && <Sparkline values={e.spark} className="h-10 w-[140px]" />}
           <div className="text-right">
             <div className="mono text-[34px] font-semibold leading-none tracking-[-0.03em] text-ink">{Math.round(e.heat)}</div>
-            <div className="mt-1 text-[11.5px] text-ink-4">热度指数</div>
+            <div className="mt-1 text-[11.5px] text-ink-4">处置优先级</div>
           </div>
         </div>
       </div>
@@ -163,7 +161,6 @@ function Runner({ e }: { e: HotEntryView }) {
       <div className="flex items-center gap-2.5">
         <span className={`mono text-[12px] font-bold tracking-[0.16em] ${rankColor(e.rank)}`}>NO.{pad(e.rank)}</span>
         <Badges e={e} />
-        <Delta trend={e.trend} pct={e.trendPct} className="ml-auto" />
       </div>
       <h2 className="mt-2.5 line-clamp-2 text-[16px] font-[650] leading-[1.5] text-ink">
         <StoryLink e={e} className="group-hover:text-accent" />
@@ -186,11 +183,11 @@ function Runner({ e }: { e: HotEntryView }) {
   );
 }
 
-/** No. 4–10: a row each, with a line of the digest, faces, the day of heat and the index. */
+/** No. 4–10: a row each, with a line of the digest, faces, the cover trend and the priority score. */
 function Row({ e }: { e: HotEntryView }) {
   return (
     <li className="group relative grid grid-cols-[30px_minmax(0,1fr)] items-start gap-x-3 px-4 py-3 transition-colors hover:bg-bg-sunk/70 sm:px-5 lg:grid-cols-[44px_minmax(0,1fr)_auto_104px_76px] lg:items-center lg:gap-x-6 lg:px-6 lg:py-3.5 dark:hover:bg-bg-muted/40">
-      <span className={`mono text-[16px] font-semibold leading-[24px] lg:text-[17px] ${rankColor(e.rank)}`} aria-label={`热度排名第 ${e.rank} 位`}>
+      <span className={`mono text-[16px] font-semibold leading-[24px] lg:text-[17px] ${rankColor(e.rank)}`} aria-label={`优先级排名第 ${e.rank} 位`}>
         {pad(e.rank)}
       </span>
       <div className="min-w-0">
@@ -208,25 +205,21 @@ function Row({ e }: { e: HotEntryView }) {
           <span className="text-[12px] text-ink-4">
             <span className="num">{e.sourceCount}</span> 个来源
           </span>
-          <span className="ml-auto flex items-center gap-2">
-            <span className="mono text-[17px] font-semibold leading-none text-ink">{Math.round(e.heat)}</span>
-            <Delta trend={e.trend} pct={e.trendPct} />
-          </span>
+          <span className="mono ml-auto text-[17px] font-semibold leading-none text-ink">{Math.round(e.heat)}</span>
         </div>
       </div>
       <div className="hidden items-center gap-2.5 lg:flex">
         <Faces participants={e.participants} total={e.participantCount} size={20} />
       </div>
       <Sparkline values={e.spark} className="hidden h-7 w-[104px] lg:block" />
-      <div className="hidden flex-col items-end gap-1 lg:flex">
+      <div className="hidden items-center lg:flex">
         <span className="mono text-[20px] font-semibold leading-none tracking-[-0.02em] text-ink">{Math.round(e.heat)}</span>
-        <Delta trend={e.trend} pct={e.trendPct} />
       </div>
     </li>
   );
 }
 
-/** Opens "热度是怎么算的" at the foot of the page and brings it into view. */
+/** Opens "优先级是怎么算的" at the foot of the page and brings it into view. */
 function showMethod() {
   const method = document.getElementById("hot-method") as HTMLDetailsElement | null;
   if (!method) return;
@@ -246,7 +239,7 @@ export default function HotPage() {
         large
         sub={
           <>
-            过去 {hot.windowHours}{`${subjectAfter(" 小时", "圈")}讨论最多的 `}{hot.entries.length || 10} 件事
+            过去 {hot.windowHours} 小时最该处置的 {hot.entries.length || 10} 个漏洞
             {hot.computedAt && (
               <>
                 {" · "}
@@ -268,25 +261,25 @@ export default function HotPage() {
               <span className="absolute inline-flex size-full animate-ping rounded-full bg-hot opacity-30" />
               <span className="relative inline-flex size-2 rounded-full bg-hot" />
             </span>
-            实时热度
+            实时优先级
           </div>
           <h1 className="mt-1.5 text-[24px] font-bold leading-[1.3] tracking-[-0.01em] text-ink lg:text-[26px]">{withSubject("热点榜")}</h1>
-          <p className="mt-1.5 text-[13.5px] text-ink-3">过去 {hot.windowHours}{` 小时，${withSubject("圈")}讨论最多的 `}{hot.entries.length || 10} 件事</p>
+          <p className="mt-1.5 text-[13.5px] text-ink-3">过去 {hot.windowHours} 小时，最该处置的 {hot.entries.length || 10} 个漏洞</p>
         </div>
         {hot.computedAt && (
           <p className="text-[12px] text-ink-4">
-            <span className="num">{monthDayTime(hot.computedAt)}</span> 更新 · 按讨论热度排序
+            <span className="num">{monthDayTime(hot.computedAt)}</span> 更新 · 按处置优先级排序
           </p>
         )}
       </header>
 
       {!lead ? (
         <div className="card rounded-sheet">
-          <EmptyState title="暂时没有热点">还没有足够多来源共同讨论的事件。</EmptyState>
+          <EmptyState title="暂时没有热点">过去 48 小时内还没有可排序的漏洞事件。</EmptyState>
         </div>
       ) : (
         <>
-          <section aria-label="热度前三" className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:gap-4">
+          <section aria-label="优先级前三" className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:gap-4">
             <div className="grid grid-cols-1 lg:col-span-7 lg:row-span-2 xl:col-span-8">
               <Lead e={lead} />
             </div>
@@ -303,7 +296,7 @@ export default function HotPage() {
                 <h2 className="text-[15px] font-semibold text-ink">
                   继续看 <span className="num font-normal text-ink-4">No.{pad(others[0]!.rank)}–{pad(others[others.length - 1]!.rank)}</span>
                 </h2>
-                <span className="hidden text-[12px] text-ink-4 lg:block">参与者 · 24 小时走势 · 热度指数</span>
+                <span className="hidden text-[12px] text-ink-4 lg:block">参与者 · 24 小时覆盖 · 处置优先级</span>
               </div>
               <ol className="card divide-y divide-line-soft overflow-hidden">
                 {others.map((e) => (
@@ -318,7 +311,7 @@ export default function HotPage() {
       <details id="hot-method" className="disclosure group/method mt-8 scroll-mt-[calc(var(--bar-h)+16px)] text-[12px] text-ink-4">
         <summary className="flex items-center gap-1.5 py-1 transition-colors hover:text-ink-2">
           <IconInfo size={15} />
-          热度是怎么算的？
+          优先级是怎么算的？
           <span className="ml-auto inline-flex items-center gap-0.5">
             <span className="group-open/method:hidden">了解榜单</span>
             <span className="hidden group-open/method:inline">收起</span>
@@ -327,8 +320,8 @@ export default function HotPage() {
         </summary>
         <div className="max-w-[760px] space-y-2 pb-2 pl-[21px] pt-2 leading-[1.75] text-ink-3">
           <p>榜单统计过去 48 小时的事件，按<strong>处置优先级</strong>排序——衡量的是这个漏洞现在有多该管，不是有多少人在聊。</p>
-          <p>计分看四件事：是否已在野利用、是否已有公开 PoC、有多少权威源收录、离现在多久（24 小时半衰期衰减）。</p>
-          <p>趋势只比较持续覆盖的同一组信源，反映我们的监测范围，不代表全网关注度；缺少可比历史时不展示趋势线。</p>
+          <p>计分看四件事：是否已在野利用、是否已有公开 PoC、有多少权威源收录、离现在多久。分越高越该先看，满分 100。</p>
+          <p>卡片上的折线是过去 24 小时覆盖这件事的来源数，只比较持续覆盖的同一组信源；缺少可比数据时留空。</p>
           <p>信源名单只展示可公开阅读的报道来源。点击事件可查看各方报道与观点。</p>
           <dl className="flex flex-wrap gap-x-5 gap-y-1.5 pt-1">
             {Object.values(BADGES).map((b) => (

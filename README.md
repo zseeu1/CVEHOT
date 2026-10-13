@@ -24,7 +24,7 @@
 
 ## 这是什么
 
-信源是 GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库和 CISA 在野利用清单。新出现的漏洞和攻击事件被挑出来，写成标题和摘要，按漏洞编号归到一个事件下，再算热度、出日报。
+信源是 GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库和 CISA 在野利用清单。新出现的漏洞和攻击事件被挑出来，写成标题和摘要，按漏洞编号归到一个事件下，再排处置优先级、出日报。
 
 它基于 [AIHOT](https://github.com/KKKKhazix/AIHOT) 修改。AIHOT 是数字生命卡兹克（[@KKKKhazix](https://github.com/KKKKhazix)）写的开源框架，一套自己找热点、自己写日报的引擎，换掉行业就能跑成另一个站。引擎是那套，行业从 AI 换成了漏洞情报。
 
@@ -51,7 +51,7 @@
 | --- | --- |
 | ![漏洞日报（深色）](docs/assets/shot-daily-dark.png) | ![漏洞日报（浅色）](docs/assets/shot-daily-light.png) |
 
-<p align="center"><sub>热点榜：按独立来源数算热度，配 24 小时趋势。同一家媒体发十篇也只算一次。</sub></p>
+<p align="center"><sub>热点榜：过去 48 小时最该处置的漏洞，按在野利用、公开 PoC、权威源收录和新鲜度打分排序。</sub></p>
 
 | 深色 | 浅色 |
 | --- | --- |
@@ -61,14 +61,14 @@
 
 只动行业部分，引擎没改。
 
-- `industry/sources.json` 7 个漏洞信源（GitHub 安全公告、CVE 官方记录、PoC 仓库、供应链投毒、CISA 在野利用清单等）
+- `industry/sources.json` 7 个漏洞信源（GitHub 安全公告、CVE 官方记录、PoC 仓库、供应链投毒、CISA 在野利用清单等），加上 `modules/gh-poc-scan/` 每小时推送的新 PoC 仓库，一共 8 个在用
 - `industry/taxonomy.ts` 分类按漏洞视角：在野利用、公开 PoC、厂商通告、供应链投毒
 - `industry/topics.json` 主题换成厂商、组件和漏洞类型
 - `industry/prompts/` 评分和事实抽取按漏洞视角重写，加了「不得由『高危』推断『在野利用』」这类硬规则
 - `industry/selection.ts` 入选门槛按漏洞情报的分布重设
 - `site/site.ts` 站名、行业词、首页和关于页文案，报眼多了一项「条在野利用」
 - `site/brand/` 换成自己的图标
-- `modules/cve-repo-index/` 扫 GitHub 上提到 CVE 的仓库建索引，同时作为推送源参与热度加权，在条目页显示「N 个 PoC 仓库」
+- `modules/cve-repo-index/` 扫 GitHub 上提到 CVE 的仓库建索引，同时作为推送源参与优先级加权，在条目页显示「N 个 PoC 仓库」
 - 判断类的那四个步骤（预筛、评分、归组、归组复核）可以交给 [Jev](https://openrouter.ai/~typesafe/jev-latest)，它只回类型化答案和概率、不写文字；没配 key 时仍走默认模型
 
 ## 借鉴
@@ -77,7 +77,7 @@
 
 这个项目原有的机制只看最近几天**新出现**的仓库，没有历史纵深。这个模块现在补的是两部分：
 - **历史索引** — 按月切片扫描 GitHub，结果进自己的表 `cve_repos`，按编号查得到一个明确数字，不进精选、归组和日报，零模型调用
-- **热度信号** — 接收新出现的 PoC 仓库作为推送源，参与热度加权，并在条目页显示该 CVE 的仓库总数
+- **优先级信号** — 接收新出现的 PoC 仓库作为推送源，参与优先级加权，并在条目页显示该 CVE 的仓库总数
 
 GitHub 搜索单查询最多返回 1000 条，按月切片在繁忙月份一样会截断。所以除了时间切片，还提供 `--lookup <编号> --live`，直接问 GitHub 要单个编号的权威数量。
 

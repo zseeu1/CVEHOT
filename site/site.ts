@@ -67,7 +67,7 @@ export const SITE = {
   /** 中国大陆网站的 ICP 备案号（选填），填了就显示在侧栏底部和“我的”页底部，并链接到工信部备案系统。 */
   icp: null as string | null,
   /** 源码的 GitHub 仓库地址（选填），填了就在侧栏底部和“我的”页底部显示“GitHub 开源”。 */
-  github: null as string | null,
+  github: "https://github.com/zseeu1/CVEHOT",
   /** 结构化数据里的网站运营者（搜索引擎用）。 */
   organization: {
     name: "CVEHOT",
@@ -140,8 +140,8 @@ export const ABOUT = {
   sourcesFallback: "十几",
   /** 信源河动画下面的四个环节。 */
   steps: {
-    collect: "GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库和 CISA 在野利用清单都在看；产出多的源 15 分钟看一次。",
-    store: "同一条漏洞的官方公告、PoC 仓库和媒体报道归成一个事件；热度按独立来源数算，同一家发十篇也只算一次。",
+    collect: "GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库、CISA 在野利用清单，以及每小时扫一遍 GitHub 新建的 PoC 仓库；产出多的源 15 分钟看一次。",
+    store: "同一条漏洞的官方公告、PoC 仓库和媒体报道归成一个事件；榜单按处置优先级排：在野利用、公开 PoC、权威源收录、事件新鲜度。",
     select: `模型先判断这条资料讲的是不是一个具体漏洞或攻击事件，再按在野利用、影响面、利用条件和复现状态打分，写中文标题、摘要和${ITEM_COPY.reasonLabel}；厂商营销和只有标题的传闻进不来。`,
     publish: `${EDITION_WHEN.daily} 出日报，${EDITION_WHEN.weekly} 出周报，${EDITION_WHEN.monthly} 出月报。`,
   },

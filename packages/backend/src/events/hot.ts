@@ -58,13 +58,14 @@ export const HOT_RULE_VERSION = "vuln-v1-48h-priority";
 const WINDOW_HOURS = 48;
 const HALF_LIFE_HOURS = 24;
 
-// 处置优先级计分公式权重
+// 处置优先级计分公式权重（相加为 100）
 const PRIORITY_WEIGHTS = {
   exploited: 40,      // 已在野利用
   hasPoc: 25,         // 已有公开 PoC
-  authoritySourcesMax: 15, // min(T1源数, 3) × 5
-  freshness: 30,      // 30 × (1 − 事件龄 / 48h)
-  selectedScore: 10,  // 可选：min(精选分 / 90, 1) × 10
+  t1PerSource: 5,     // 每个权威源（T1）5 分
+  t1MaxSources: 2,    // 权威源最多算 2 个
+  freshness: 20,      // 20 × (1 − 事件龄 / 48h)
+  selectedScore: 5,   // min(精选分 / 90, 1) × 5
 } as const;
 
 interface HeatRow {
@@ -190,8 +191,10 @@ export async function heatRows(at: Date, behind: string[] = [], storyIds?: numbe
             OR EXISTS (SELECT 1 FROM story_signals ss WHERE ss.story_id = a.story_id AND ss.source_id = 'json-cisa-kev')) AS has_exploited,
            (st.title ILIKE '%PoC%' OR st.title ILIKE '%复现%'
             OR EXISTS (SELECT 1 FROM story_signals ss JOIN sources s ON s.id = ss.source_id WHERE ss.story_id = a.story_id AND s.id = ANY(ARRAY['gh-poc-scan', 'rss-poc-in-github', 'rss-trickest-cve']::text[]))) AS has_poc,
-           (SELECT count(DISTINCT s.id) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id JOIN sources s ON s.id = p.source_id WHERE f.story_id = a.story_id AND s.tier = 'T1') AS t1_source_count,
-           (SELECT max(p.score) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id WHERE f.story_id = a.story_id AND p.selected) AS max_selected_score
+           (SELECT count(DISTINCT s.id) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id JOIN sources s ON s.id = p.source_id
+             WHERE f.story_id = a.story_id AND s.tier = 'T1' AND coalesce(p.published_at, p.discovered_at) > ${nowFrom}) AS t1_source_count,
+           (SELECT max(p.score) FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN publications p ON p.article_id = fa.article_id
+             WHERE f.story_id = a.story_id AND p.selected AND coalesce(p.published_at, p.discovered_at) > ${nowFrom}) AS max_selected_score
     FROM agg a JOIN stories st ON st.id = a.story_id
     WHERE st.merged_into IS NULL`;
 }
@@ -202,12 +205,13 @@ export function heatIndex(heat: number): number {
 
 /**
  * 计算事件的处置优先级分数（0-100）
- * 公式：40×在野利用 + 25×PoC + 5×min(T1源数,3) + 30×(1−事件龄/48h) + 10×min(精选分/90,1)
+ * 公式：40×在野利用 + 25×PoC + 5×min(T1源数,2) + 20×(1−事件龄/48h) + 5×min(精选分/90,1)
+ * 导出是为了让测试能直接比较分数，而不只是看字段。
  */
-function computePriorityScore(row: HeatRow, now: Date): number {
+export function computePriorityScore(row: HeatRow, now: Date): number {
   const ageHours = (now.getTime() - (row.latest_at?.getTime() ?? now.getTime())) / 3600_000;
   const freshnessScore = Math.max(0, PRIORITY_WEIGHTS.freshness * (1 - ageHours / WINDOW_HOURS));
-  const t1Score = Math.min(row.t1_source_count, 3) * 5;
+  const t1Score = Math.min(row.t1_source_count, PRIORITY_WEIGHTS.t1MaxSources) * PRIORITY_WEIGHTS.t1PerSource;
   const selectedScore = row.max_selected_score ? PRIORITY_WEIGHTS.selectedScore * Math.min(row.max_selected_score / 90, 1) : 0;
 
   const score =
