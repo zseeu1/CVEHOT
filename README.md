@@ -24,7 +24,7 @@
 
 ## 这是什么
 
-信源是 GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库和 CISA 在野利用清单。新出现的漏洞和攻击事件被挑出来，写成标题和摘要，按漏洞编号归到一个事件下，再排处置优先级、出日报。
+信源是 GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库和 CISA 在野利用清单。新出现的漏洞和攻击事件被挑出来，写成标题和摘要，按漏洞编号归到一个事件下，再排关注优先级、出日报。
 
 它基于 [AIHOT](https://github.com/KKKKhazix/AIHOT) 修改。AIHOT 是数字生命卡兹克（[@KKKKhazix](https://github.com/KKKKhazix)）写的开源框架，一套自己找热点、自己写日报的引擎，换掉行业就能跑成另一个站。引擎是那套，行业从 AI 换成了漏洞情报。
 
@@ -51,7 +51,7 @@
 | --- | --- |
 | ![漏洞日报（深色）](docs/assets/shot-daily-dark.png) | ![漏洞日报（浅色）](docs/assets/shot-daily-light.png) |
 
-<p align="center"><sub>热点榜：过去 48 小时最该处置的漏洞，按在野利用、公开 PoC、权威源收录和新鲜度打分排序。</sub></p>
+<p align="center"><sub>热点榜：过去 48 小时最该关注的漏洞，按在野利用、公开 PoC、权威源收录和新鲜度打分排序。</sub></p>
 
 | 深色 | 浅色 |
 | --- | --- |

@@ -110,7 +110,7 @@ export function llmsTxt(opts: {
   lines.push("");
   lines.push("## 网站主要页面", "");
   lines.push(`- [首页 · 精选](${u("/")}): ${subjectAfter("每日", "精选动态")}`);
-  lines.push(`- [${withSubject("热点榜")}](${u("/hot")}): 过去 48 小时内最该处置的漏洞事件，按在野利用、公开 PoC、权威源收录与新鲜度排序；可进入事件页查看最新进展、报道时间线和综述`);
+  lines.push(`- [${withSubject("热点榜")}](${u("/hot")}): 过去 48 小时内最该关注的漏洞事件，按在野利用、公开 PoC、权威源收录与新鲜度排序；可进入事件页查看最新进展、报道时间线和综述`);
   lines.push(`- [全部动态](${u("/all")}): ${subjectAfter("全量", "资讯流")}，可按分类筛选`);
   if (opts.hasDailies) {
     lines.push(`- [${withSubject("日报")}](${u("/daily")}): ${subjectAfter("每日", "行业精编汇总")}`);

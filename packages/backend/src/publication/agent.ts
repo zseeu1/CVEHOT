@@ -116,7 +116,7 @@ export function hotAnswer(res: HotTopics, limit: number, via: Via): string {
       "",
     ];
   });
-  return answer([`# ${SITE.name} 当前热点 Top ${items.length}`, "", "过去 48 小时内最该处置的漏洞事件，按处置优先级排列；时间为北京时间。"], data, [
+  return answer([`# ${SITE.name} 当前热点 Top ${items.length}`, "", "过去 48 小时内最该关注的漏洞事件，按关注优先级排列；时间为北京时间。"], data, [
     "按名次完整列出，写「第 N 名」；不要说热度分数，也不要把信源数量说成热度。",
     via === "http" ? "用户追问某个事件的来龙去脉、时间线或最新进展时，请求它的「来龙去脉」地址；不要自己拼地址。" : `用户追问某个事件的来龙去脉、时间线或最新进展时，用 ${T.story} 和上面给出的 public_id；不要猜。`,
     NO_INTERNALS,
@@ -283,7 +283,7 @@ export function agentGuide(): string {
     "| 全部公开动态，不只精选 | 加 mode=all |",
     "| 多看几条 | 加 limit=20（1–30，默认 10） |",
     `| 某家公司、产品、模型、人物或话题 | ${u("/search?q=关键词")}（最近 7 天；只看今天加 window=24h） |`,
-    `| 现在最该处置的漏洞 | ${u("/hot")} |`,
+    `| 现在最该关注的漏洞 | ${u("/hot")} |`,
     "| 某个热点的来龙去脉、后续进展 | 热点结果里每个事件的「来龙去脉」地址 |",
     `| ${SITE.name} 日报 | ${u("/daily")}（最新一期）；指定日期：${u("/daily/2026-09-30")} |`,
     `| 这一周、这个月的重点（周报、月报） | ${u("/weekly")}、${u("/monthly")}（最新一期）；指定一期：${u("/weekly/2026-W39")}、${u("/monthly/2026-09")} |`,

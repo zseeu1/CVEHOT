@@ -47,7 +47,7 @@ export function HotTopics({ entries }: { entries: HotStripEntry[] }) {
               <span className="hidden justify-end sm:flex">
                 <Faces participants={e.participants} total={e.participantCount} size={20} interactive={false} />
               </span>
-              <span className="whitespace-nowrap text-right text-[12.5px] text-ink-4" title="处置优先级">
+              <span className="whitespace-nowrap text-right text-[12.5px] text-ink-4" title="关注优先级">
                 <span className="num text-[13.5px] font-semibold text-ink-2">{Math.round(e.heat)}</span> 分
               </span>
             </Link>

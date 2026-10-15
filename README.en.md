@@ -23,7 +23,7 @@ industry was changed from AI news to vulnerability intelligence.
 
 Sources are the GitHub Security Advisories, cvelistV5, CISA KEV, the OpenSSF malicious-packages
 dataset, and new CVE repositories on GitHub. New vulnerabilities and incidents get a headline and a
-summary, are grouped under their CVE identifier, ranked by handling priority, and compiled into a daily report.
+summary, are grouped under their CVE identifier, ranked by attention priority, and compiled into a daily report.
 
 - Upstream: <https://github.com/KKKKhazix/AIHOT>
 - License: MIT, © 2026 数字生命卡兹克, see [LICENSE](LICENSE)

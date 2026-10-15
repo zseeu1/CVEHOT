@@ -33,7 +33,7 @@ export function dailyMetrics(main: EditionEntry[]) {
     sourcesCount: new Set(main.flatMap((e) => [e.entry.sourceId, ...(e.entry.related ?? []).map((r) => r.sourceId)])).size,
     ...(RELEASE ? { modelsReleased: main.filter((e) => isRelease(e.category, e.tags) && !e.previous && e.authority < 3).length } : {}),
     firstPartyEvents: main.filter((e) => e.entry.firstParty).length,
-    /** 漏洞行业的口径：报头的「N 条在野利用」＝ 本期刊出的「在野利用与紧急处置」栏目条目数。 */
+    /** 漏洞行业的口径：报头的「N 条在野利用」＝ 本期刊出的「在野利用与紧急修补」栏目条目数。 */
     exploited: main.filter((e) => e.category === "exploited").length,
   };
 }

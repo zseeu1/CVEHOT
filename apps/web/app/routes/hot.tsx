@@ -25,7 +25,7 @@ export async function loader({ request }: { request: Request }) {
 export function meta() {
   return pageMeta({
     title: withSubject("热点榜"),
-    description: "过去 48 小时最该处置的 10 个漏洞：按在野利用、公开 PoC、权威源收录与新鲜度排序。",
+    description: "过去 48 小时最该关注的 10 个漏洞：按在野利用、公开 PoC、权威源收录与新鲜度排序。",
     path: "/hot",
     image: "/og/pages/hot.png",
   });
@@ -102,7 +102,7 @@ function HeatPanel({ e }: { e: HotEntryView }) {
   );
 }
 
-/** No. 1: the event that ranks highest by handling priority, with its picture, digest and latest turn. */
+/** No. 1: the event that ranks highest by attention priority, with its picture, digest and latest turn. */
 function Lead({ e }: { e: HotEntryView }) {
   const panel = !e.cover && e.spark.filter((v) => v !== null).length >= 3;
   return (
@@ -146,7 +146,7 @@ function Lead({ e }: { e: HotEntryView }) {
           {!panel && <Sparkline values={e.spark} className="h-10 w-[140px]" />}
           <div className="text-right">
             <div className="mono text-[34px] font-semibold leading-none tracking-[-0.03em] text-ink">{Math.round(e.heat)}</div>
-            <div className="mt-1 text-[11.5px] text-ink-4">处置优先级</div>
+            <div className="mt-1 text-[11.5px] text-ink-4">关注优先级</div>
           </div>
         </div>
       </div>
@@ -239,7 +239,7 @@ export default function HotPage() {
         large
         sub={
           <>
-            过去 {hot.windowHours} 小时最该处置的 {hot.entries.length || 10} 个漏洞
+            过去 {hot.windowHours} 小时最该关注的 {hot.entries.length || 10} 个漏洞
             {hot.computedAt && (
               <>
                 {" · "}
@@ -264,11 +264,11 @@ export default function HotPage() {
             实时优先级
           </div>
           <h1 className="mt-1.5 text-[24px] font-bold leading-[1.3] tracking-[-0.01em] text-ink lg:text-[26px]">{withSubject("热点榜")}</h1>
-          <p className="mt-1.5 text-[13.5px] text-ink-3">过去 {hot.windowHours} 小时，最该处置的 {hot.entries.length || 10} 个漏洞</p>
+          <p className="mt-1.5 text-[13.5px] text-ink-3">过去 {hot.windowHours} 小时，最该关注的 {hot.entries.length || 10} 个漏洞</p>
         </div>
         {hot.computedAt && (
           <p className="text-[12px] text-ink-4">
-            <span className="num">{monthDayTime(hot.computedAt)}</span> 更新 · 按处置优先级排序
+            <span className="num">{monthDayTime(hot.computedAt)}</span> 更新 · 按关注优先级排序
           </p>
         )}
       </header>
@@ -296,7 +296,7 @@ export default function HotPage() {
                 <h2 className="text-[15px] font-semibold text-ink">
                   继续看 <span className="num font-normal text-ink-4">No.{pad(others[0]!.rank)}–{pad(others[others.length - 1]!.rank)}</span>
                 </h2>
-                <span className="hidden text-[12px] text-ink-4 lg:block">参与者 · 24 小时覆盖 · 处置优先级</span>
+                <span className="hidden text-[12px] text-ink-4 lg:block">参与者 · 24 小时覆盖 · 关注优先级</span>
               </div>
               <ol className="card divide-y divide-line-soft overflow-hidden">
                 {others.map((e) => (
@@ -319,7 +319,7 @@ export default function HotPage() {
           </span>
         </summary>
         <div className="max-w-[760px] space-y-2 pb-2 pl-[21px] pt-2 leading-[1.75] text-ink-3">
-          <p>榜单统计过去 48 小时的事件，按<strong>处置优先级</strong>排序——衡量的是这个漏洞现在有多该管，不是有多少人在聊。</p>
+          <p>榜单统计过去 48 小时的事件，按<strong>关注优先级</strong>排序——衡量的是这个漏洞现在有多值得关注，不是有多少人在聊。</p>
           <p>计分看四件事：是否已在野利用、是否已有公开 PoC、有多少权威源收录、离现在多久。分越高越该先看，满分 100。</p>
           <p>卡片上的折线是过去 24 小时覆盖这件事的来源数，只比较持续覆盖的同一组信源；缺少可比数据时留空。</p>
           <p>信源名单只展示可公开阅读的报道来源。点击事件可查看各方报道与观点。</p>

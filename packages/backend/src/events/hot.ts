@@ -58,7 +58,7 @@ export const HOT_RULE_VERSION = "vuln-v1-48h-priority";
 const WINDOW_HOURS = 48;
 const HALF_LIFE_HOURS = 24;
 
-// 处置优先级计分公式权重（相加为 100）
+// 关注优先级计分公式权重（相加为 100）
 const PRIORITY_WEIGHTS = {
   exploited: 40,      // 已在野利用
   hasPoc: 25,         // 已有公开 PoC
@@ -204,7 +204,7 @@ export function heatIndex(heat: number): number {
 }
 
 /**
- * 计算事件的处置优先级分数（0-100）
+ * 计算事件的关注优先级分数（0-100）
  * 公式：40×在野利用 + 25×PoC + 5×min(T1源数,2) + 20×(1−事件龄/48h) + 5×min(精选分/90,1)
  * 导出是为了让测试能直接比较分数，而不只是看字段。
  */
@@ -229,7 +229,7 @@ export async function computeHotRanking(at = new Date()): Promise<{ id: number; 
   // 改为：48h 内至少有 1 个 editorial 参与者（而不是需要 ≥2 个独立参与者）
   const rows = (await heatRows(at, behind)).filter((r) => Number(r.editorial_participants) >= 1);
 
-  // 按处置优先级分数排序
+  // 按关注优先级分数排序
   rows.sort((a, b) => {
     const scoreA = computePriorityScore(a, at);
     const scoreB = computePriorityScore(b, at);
@@ -286,7 +286,7 @@ export async function computeHotRanking(at = new Date()): Promise<{ id: number; 
       storyId: r.story_id,
       storyPublicId: r.public_id,
       title: r.title,
-      heat: Math.round(priorityScore), // 用处置优先级分数替代热度
+      heat: Math.round(priorityScore), // 用关注优先级分数替代热度
       trend: prevAll <= 0 ? "new" : pct === null ? "unknown" : pct > 0.1 ? "up" : pct < -0.1 ? "down" : "flat",
       trendPct: pct === null ? null : Math.round(pct * 1000) / 10,
       badges,

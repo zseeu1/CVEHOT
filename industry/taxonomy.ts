@@ -8,7 +8,7 @@
  * 没归上类的资料在日报里放进最后一节。
  */
 export const CATEGORIES = [
-  { key: "exploited", label: "在野利用", section: "在野利用与紧急处置", guide: "已确认被在野利用、已列入 CISA KEV、或已被大规模扫描攻击的漏洞与攻击活动" },
+  { key: "exploited", label: "在野利用", section: "在野利用与紧急修补", guide: "已确认被在野利用、已列入 CISA KEV、或已被大规模扫描攻击的漏洞与攻击活动" },
   { key: "poc", label: "PoC/复现", section: "已公开 PoC 与复现", guide: "公开了 PoC、EXP、复现步骤或完整利用细节的漏洞" },
   { key: "advisory", label: "漏洞通告", section: "漏洞通告与补丁", guide: "厂商、CERT、GitHub 安全公告库等发布的漏洞通告、补丁与影响版本说明" },
   { key: "supply-chain", label: "供应链", section: "供应链与依赖风险", guide: "开源仓库投毒、恶意包、依赖混淆、构建与发布凭证被滥用的风险与事件" },

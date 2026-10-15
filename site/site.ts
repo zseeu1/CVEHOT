@@ -141,7 +141,7 @@ export const ABOUT = {
   /** 信源河动画下面的四个环节。 */
   steps: {
     collect: "GitHub 安全公告库、CVE 官方记录、PoC 仓库、开源供应链投毒库、CISA 在野利用清单，以及每小时扫一遍 GitHub 新建的 PoC 仓库；产出多的源 15 分钟看一次。",
-    store: "同一条漏洞的官方公告、PoC 仓库和媒体报道归成一个事件；榜单按处置优先级排：在野利用、公开 PoC、权威源收录、事件新鲜度。",
+    store: "同一条漏洞的官方公告、PoC 仓库和媒体报道归成一个事件；榜单按关注优先级排：在野利用、公开 PoC、权威源收录、事件新鲜度。",
     select: `模型先判断这条资料讲的是不是一个具体漏洞或攻击事件，再按在野利用、影响面、利用条件和复现状态打分，写中文标题、摘要和${ITEM_COPY.reasonLabel}；厂商营销和只有标题的传闻进不来。`,
     publish: `${EDITION_WHEN.daily} 出日报，${EDITION_WHEN.weekly} 出周报，${EDITION_WHEN.monthly} 出月报。`,
   },
@@ -201,7 +201,7 @@ export const REPORTS = {
   /** 报告分享图上“共几条”的说法。 */
   shareUnit: "件大事",
   /** 日报时段内有资料经过评判、但没有新大事时的标题与导语。 */
-  quiet: { title: "今日平静，没有需要立即处置的漏洞", paragraph: `${subjectAfter("北京时间 {start} 至 {end}，没有新的", "大事")}。` },
+  quiet: { title: "今日平静，没有需要立即关注的漏洞", paragraph: `${subjectAfter("北京时间 {start} 至 {end}，没有新的", "大事")}。` },
 };
 
 /** 运维告警（只发给站长）里随部署而变的几处说法。 */
@@ -235,7 +235,7 @@ export const COMMUNITY_FEEDS: { dev: string[]; hn: string[] } = {
 export const CARDS: Record<string, { kicker: string; title: string; subtitle: string; accent?: "hot" | "amber" }> = {
   site: { kicker: subjectAfter("每日", "精选"), title: SITE.tagline, subtitle: SITE.description },
   all: { kicker: subjectAfter("全部", "动态"), title: "所有信源的最新动态，一站看完", subtitle: "按时间汇总各信源的最新动态，可按类别与标签筛选。" },
-  hot: { kicker: "热点榜", title: "过去 48 小时，最该处置的漏洞", subtitle: "按风险优先级排序：在野利用、PoC 公开、权威源收录、事件新鲜度。", accent: "hot" },
+  hot: { kicker: "热点榜", title: "过去 48 小时，最该关注的漏洞", subtitle: "按风险优先级排序：在野利用、PoC 公开、权威源收录、事件新鲜度。", accent: "hot" },
   daily: { kicker: withSubject("日报"), title: subjectAfter(`每天 ${spokenTime(EDITION_TIMES.daily)}，一份读得完的`, "日报"), subtitle: `${subjectAfter("前一天值得关注的", "动态")}。` },
   weekly: { kicker: withSubject("周报"), title: `一周${REPORTS.entry.noun}，一次看清`, subtitle: "本周的主线、重要发布与值得回看的讨论。" },
   monthly: { kicker: withSubject("月报"), title: "一个月的变化", subtitle: "月度主线与关键事件回顾。" },
