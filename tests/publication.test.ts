@@ -262,12 +262,14 @@ test("a withdrawn item leaves the hot board and the hot APIs at once, not at the
   // Two independent participants (heat counts sources, not reports).
   const second = `${SOURCE}-hot-b`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at) VALUES (${second}, 'Test publication B', 'rss', 'T1', 'editorial', '2100-01-01')`;
+  const reports: string[] = [];
   for (const [i, id] of [await article(), await article()].entries()) {
     if (i) await sql`UPDATE articles SET source_id = ${second} WHERE id = ${id}`;
     await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${fact!.id}, ${id}, 'report')`;
     await sql`INSERT INTO story_signals (story_id, article_id, participant_key, source_id, kind, observed_at)
               VALUES (${story!.id}, ${id}, ${`participant-${id}`}, ${i ? second : SOURCE}, 'editorial', now() - interval '1 hour')`;
     await publishArticle(id, released());
+    reports.push(id);
   }
   await computeHotRanking();
   const rep = (await latestHotRanking())!.entries.find((e) => e.storyId === story!.id)?.representativeItemId;
@@ -279,6 +281,16 @@ test("a withdrawn item leaves the hot board and the hot APIs at once, not at the
 
   await setVisibility(rep!, { visibility: "withdrawn", reason: "test", version: 0 }, "test");
   for (const url of exits) assert.ok(!(await get(url)).body.includes(rep!), `${url} still shows the withdrawn item`);
+  // The event is on the board while a report of it is still public, so the surviving report now
+  // carries the card instead of the withdrawn one. The board and the machine exits agree on it.
+  const surviving = reports.find((id) => id !== rep!)!;
+  const afterFirst = JSON.parse((await get("/api/site/hot")).body) as { entries: Array<{ story: { publicId: string } }> };
+  assert.ok(afterFirst.entries.some((e) => e.story.publicId === publicId), "/api/site/hot hides the event of the withdrawn item while another report is public");
+  for (const url of exits) assert.ok((await get(url)).body.includes(surviving), `${url} hides the surviving report`);
+
+  // Once the event has no public report left, it leaves the board and the APIs at once.
+  await setVisibility(surviving, { visibility: "withdrawn", reason: "test", version: 0 }, "test");
+  for (const url of exits) assert.ok(!(await get(url)).body.includes(surviving), `${url} still shows the withdrawn item`);
   assert.ok(!(await get("/api/site/hot")).body.includes(publicId), "/api/site/hot still shows the event of the withdrawn item");
 });
 
