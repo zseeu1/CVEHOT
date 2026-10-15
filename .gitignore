@@ -7,6 +7,9 @@ dist/
 .DS_Store
 .data/
 
+# Agent 的工作目录（记忆、笔记），不进版本库
+.workbuddy/
+
 # Web production build
 apps/web/build/
 apps/web/.react-router/
