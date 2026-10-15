@@ -88,7 +88,7 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --stats
 docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-year 2024 --pages 3
 ```
 
-The daily increment needs no attention; the engine's scheduler runs it at 05:20 (see `modules/cve-repo-index/server.ts`).
+The hourly scan for newly created repositories needs no attention; the engine's scheduler runs it every hour (see `modules/cve-repo-index/server.ts`). Repositories it finds also land in the index, so the index keeps growing with it.
 
 ## Run it
 

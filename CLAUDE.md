@@ -21,8 +21,7 @@ CVEHOT：基于上游 AIHOT（`upstream` 远端，<https://github.com/KKKKhazix/
 
 ## 模块
 
-- `modules/gh-poc-scan/`：每小时扫 GitHub 新建的 CVE 仓库，作为外部推送源推进站里（取代了已停用的 `json-gh-new-cve-repos` 信源）。
-- `modules/cve-repo-index/`：自己的表 `cve_repos`，按编号统计 PoC 仓库数，不进精选/归组/日报，零模型调用；每天 05:20 增量。它的迁移历史上放在 `database/migrations/0900_cve_repos.sql`（已发布，不挪），模块以后新增的表放 `modules/<名字>/migrations/`。命令行在 `scripts/cve-repo-index.ts`（`--lookup <编号> [--live]`、`--stats`、`--backfill`）。
+- `modules/cve-repo-index/`：一个模块两件事。① **新 PoC 推送源**：每小时扫 GitHub 新建的 CVE 仓库推进站里，排程任务名 `sources.gh-poc-scan`（2026-10-12 前这是个独立模块 `modules/gh-poc-scan/`，已并入，任务名保留以接上 `job_runs` 历史；它取代了已停用的 `json-gh-new-cve-repos` 信源），命令行薄壳 `scripts/gh-poc-scan.ts`。② **历史索引**：自己的表 `cve_repos`，按编号统计 PoC 仓库数，不进精选/归组/日报，零模型调用。⚠️ 索引**没有独立的定时任务**了 —— 并入时把原「每天 05:20 增量」（`cve.repo-index`）去掉了，因为每小时那次扫的是同一批仓库、也全部收进索引；要加深历史只能手动 `--backfill`。它的迁移历史上放在 `database/migrations/0900_cve_repos.sql`（已发布，不挪），模块以后新增的表放 `modules/<名字>/migrations/`。命令行在 `scripts/cve-repo-index.ts`（`--lookup <编号> [--live]`、`--stats`、`--backfill`）。
 - 模块只在 `site/modules/{index,server,web}.ts` 三份清单里登记，框架代码不导入模块。新模块还要加到 `site/package.json` 的依赖和 `Dockerfile` 的 `COPY`。
 
 ## 命令补充

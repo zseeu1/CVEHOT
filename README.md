@@ -97,7 +97,7 @@ docker compose exec -T worker node scripts/cve-repo-index.ts --stats
 docker compose exec -T worker node scripts/cve-repo-index.ts --backfill --from-year 2024 --pages 3
 ```
 
-每日增量不用管，框架的排程已经挂好了（每天 05:20，见 `modules/cve-repo-index/server.ts`）。
+每小时的新仓库扫描不用管，框架的排程已经挂好了（每小时整点，见 `modules/cve-repo-index/server.ts`）。它扫到的新仓库会同时进索引，所以索引也在跟着长。
 
 ## 跑起来
 
