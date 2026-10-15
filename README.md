@@ -61,14 +61,14 @@
 
 只动行业部分，引擎没改。
 
-- `industry/sources.json` 7 个漏洞信源（GitHub 安全公告、CVE 官方记录、PoC 仓库、供应链投毒、CISA 在野利用清单等），加上 `modules/gh-poc-scan/` 每小时推送的新 PoC 仓库，一共 8 个在用
-- `industry/taxonomy.ts` 分类按漏洞视角：在野利用、公开 PoC、厂商通告、供应链投毒
+- `industry/sources.json` 7 个漏洞信源（GitHub 安全公告、CVE 官方记录、PoC 仓库、供应链投毒、CISA 在野利用清单等），加上 `modules/cve-repo-index/` 每小时推送的新 PoC 仓库，一共 8 个在用
+- `industry/taxonomy.ts` 分类按漏洞视角：在野利用、公开 PoC、漏洞通告、供应链投毒、攻击事件
 - `industry/topics.json` 主题换成厂商、组件和漏洞类型
 - `industry/prompts/` 评分和事实抽取按漏洞视角重写，加了「不得由『高危』推断『在野利用』」这类硬规则
 - `industry/selection.ts` 入选门槛按漏洞情报的分布重设
 - `site/site.ts` 站名、行业词、首页和关于页文案，报眼多了一项「条在野利用」
 - `site/brand/` 换成自己的图标
-- `modules/cve-repo-index/` 扫 GitHub 上提到 CVE 的仓库建索引，同时作为推送源参与优先级加权，在条目页显示「N 个 PoC 仓库」
+- `modules/cve-repo-index/` 一件事两用：扫 GitHub 上提到 CVE 的仓库建索引，同时接收新出现的 PoC 仓库作为推送源参与优先级加权，在条目页显示「N 个 PoC 仓库」
 - 判断类的那四个步骤（预筛、评分、归组、归组复核）可以交给 [Jev](https://openrouter.ai/~typesafe/jev-latest)，它只回类型化答案和概率、不写文字；没配 key 时仍走默认模型
 
 ## 借鉴

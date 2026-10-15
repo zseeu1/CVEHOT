@@ -52,14 +52,14 @@ phone; a second row there picks the accent colour.
 
 Only the industry pack. The engine is upstream's.
 
-- `industry/sources.json`: seven vulnerability sources, plus a self-hosted push source `gh-poc-scan`
-- `industry/taxonomy.ts`: categories rebuilt around exploit-in-the-wild, public PoC, vendor advisories and supply-chain poisoning
+- `industry/sources.json`: seven vulnerability sources, plus the newly created PoC repositories pushed hourly by `modules/cve-repo-index/`
+- `industry/taxonomy.ts`: categories rebuilt around exploit-in-the-wild, public PoC, vulnerability advisories, supply-chain poisoning and attack incidents
 - `industry/topics.json`: topics are vendors, components and vulnerability types
 - `industry/prompts/`: scoring and fact extraction rewritten for vulnerabilities
 - `industry/selection.ts`: selection thresholds retuned for vulnerability intelligence
 - `site/site.ts`: site name, wording, home and about copy
 - `site/brand/`: own icons
-- `modules/cve-repo-index/`: scans GitHub for repositories mentioning CVEs and builds an index, serves as a priority signal source for weighting and displays "N PoC repositories" on story pages
+- `modules/cve-repo-index/`: one module, two jobs — it scans GitHub for repositories mentioning CVEs and builds an index, and it receives newly created PoC repositories as a push source that feeds the priority weighting, displaying "N PoC repositories" on story pages
 - the four judging steps (filtering, scoring, grouping, group review) can be handed to [Jev](https://openrouter.ai/~typesafe/jev-latest), which returns typed answers and probabilities rather than text; without a key they keep using the default model
 
 ## Credit
