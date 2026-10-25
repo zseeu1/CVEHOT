@@ -24,12 +24,13 @@ before(async () => {
     SELECT ${T} || '-' || lpad(n::text, 4, '0'), ${SOURCE}, ${T} || '-' || n, 'https://example.org/' || ${T} || '/' || n,
       ${T} || CASE WHEN n = 1 THEN ' needle' ELSE ' general' END, ${now}, ${now}, ${now}, '<p>licensed body</p>', 'en'
     FROM generate_series(1, 2108) n`;
+  // Last updated a minute ago: an edit stamped with the database's clock is newer even after the VM's clock steps back.
   await sql`INSERT INTO publications (article_id, title, source_id, channel, url, discovered_at, timeline_at, published_at, sort_at,
-      eligible, selected, visible_after, visibility, search_text, tags, summary, body_mode, syndicate)
+      eligible, selected, visible_after, visibility, search_text, tags, summary, body_mode, syndicate, updated_at)
     SELECT a.id, a.title, a.source_id, 'news', a.url, a.discovered_at, a.timeline_at, a.published_at, a.timeline_at,
       a.id <> ${id(2108)}, a.id = ${id(2108)}, ${new Date(+now - 1000)},
       CASE WHEN a.id = ${id(2106)} THEN 'withdrawn' ELSE 'public' END,
-      ${T} || ' needle', ${[T]}, 'fixture summary', 'full', false FROM articles a WHERE a.source_id = ${SOURCE}`;
+      ${T} || ' needle', ${[T]}, 'fixture summary', 'full', false, ${new Date(+now - 60_000)} FROM articles a WHERE a.source_id = ${SOURCE}`;
   await sql`INSERT INTO pool_search (article_id, direct, body)
     SELECT article_id, search_text, CASE WHEN right(article_id, 4)::int % 2 = 0 THEN 'needle bodyonly' ELSE 'needle' END
     FROM publications WHERE source_id = ${SOURCE} AND eligible`;

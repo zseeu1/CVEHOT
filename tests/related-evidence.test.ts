@@ -12,6 +12,7 @@ import { upsertMaterial } from "@aihot/backend/content/materials";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { mergeStoryInto } from "@aihot/backend/events/merge";
+import { linkRelatedStories } from "@aihot/backend/events/consolidate";
 import { buildApp } from "../apps/api/src/app.ts";
 
 const source = `related-evidence-${tag()}`;
@@ -94,6 +95,17 @@ test('natural ageing and a membership-preserving revision retain the association
   await sql`UPDATE grouping_decisions SET created_at=now()-interval '30 days' WHERE article_id=ANY(${bridges})`;
   await sql`INSERT INTO grouping_decisions (article_id, fact_id, story_id, verdict, candidates)
     VALUES (${bridges[0]!}, ${a.factId}, ${a.id}, 'kept', '[]'::jsonb)`;
+  await advertised(a,b,true);
+});
+
+test('a membership-preserving revision does not keep its bridge from linking two stories either', async () => {
+  const a = await story(), b = await story();
+  const bridges = [await bridge(a, b), await bridge(a, b)];
+  await sql`INSERT INTO grouping_decisions (article_id, fact_id, story_id, verdict, candidates)
+    VALUES (${bridges[0]!}, ${a.factId}, ${a.id}, 'kept', '[]'::jsonb)`;
+  await linkRelatedStories();
+  assert.equal((await sql`SELECT 1 FROM story_links WHERE story_id=${a.id} AND other_id=${b.id} AND relation='related'`).length, 1,
+    'linked by the same judgements public reads count');
   await advertised(a,b,true);
 });
 

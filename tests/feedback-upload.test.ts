@@ -89,3 +89,22 @@ test("erasing one feedback preserves an identical screenshot on another feedback
   const [row] = await sql`SELECT screenshot_key FROM feedback WHERE id = ${second.json().id}`;
   assert.deepEqual(await readFile(path.join(config.dataDir, "feedback-screenshots", row!.screenshot_key.slice(6))), file);
 });
+
+test("multipart retries reuse one screenshot and ID across both Host headers", async () => {
+  const file = await png(1024);
+  const form = new FormData();
+  form.set("content", "漏洞报告：<script>alert(1)</script>");
+  form.set("screenshot", new File([new Uint8Array(file)], "report.png", { type: "image/png" }));
+  const request = new Request("http://local/api/site/feedback", { method: "POST", body: form });
+  const payload = Buffer.from(await request.arrayBuffer());
+  const before = (await readdir(path.join(config.dataDir, "feedback-screenshots"))).length;
+  const post = (host: string) => app.inject({ method: "POST", url: "/api/site/feedback", headers: {
+    host, "content-type": request.headers.get("content-type")!, "x-real-ip": "203.0.113.219", "user-agent": "Firefox",
+  }, payload });
+  const first = await post("primary.example");
+  const retry = await post("compatible.example");
+  assert.equal(first.statusCode, 201);
+  assert.equal(retry.statusCode, 201);
+  assert.equal(first.json().id, retry.json().id);
+  assert.equal((await readdir(path.join(config.dataDir, "feedback-screenshots"))).length, before + 1);
+});

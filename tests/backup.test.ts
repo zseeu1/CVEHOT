@@ -4,8 +4,9 @@
 // reports tar's own words, not the command line in front of them.
 import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -219,4 +220,131 @@ test("local retention keeps three dump/archive pairs without deleting source att
   for (const day of [1, 2, 3, 4]) await runBackup(new Date(`2026-11-0${day}T04:00:00Z`));
   assert.deepEqual((await readdir(path.join(config.dataDir, "backups"))).sort(), [2, 3, 4].flatMap(day => [`${stem}-2026110${day}0400.dump`, `${stem}-files-2026110${day}0400.tar.gz`]).sort());
   assert.deepEqual(await readFile(path.join(config.dataDir, "feedback-screenshots/retained.png")), PNG);
+});
+
+test("a failed database dump keeps connection credentials out of argv and the reported error", async () => {
+  const bin = path.join(config.dataDir, "dump-bin");
+  await mkdir(bin);
+  const captured = path.join(bin, "invocation.json");
+  await writeFile(path.join(bin, "pg_dump"), `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(captured)}, JSON.stringify({ args: process.argv.slice(2), user: process.env.PGUSER, password: process.env.PGPASSWORD }));
+console.error("fictional dump refusal");
+process.exit(2);
+`, { mode: 0o755 });
+  const originalUrl = config.databaseUrl;
+  const originalPath = process.env.PATH;
+  const connection = new URL(originalUrl);
+  connection.username = "fictional-backup-user";
+  connection.password = "fictional-p@ss:word";
+  config.databaseUrl = connection.href;
+  process.env.PATH = `${bin}:${originalPath}`;
+  try {
+    for (const queryCredentials of [false, true]) {
+      if (queryCredentials) {
+        connection.username = connection.password = "";
+        connection.searchParams.set("user", "fictional-backup-user");
+        connection.searchParams.set("password", "fictional-p@ss:word");
+        config.databaseUrl = connection.href;
+      }
+      await assert.rejects(runBackup(NOW), (error: Error) => {
+        assert.match(error.message, /fictional dump refusal/);
+        assert.doesNotMatch(error.message, /fictional-backup-user|fictional-p|p%40ss|word@/);
+        return true;
+      });
+      const invocation = JSON.parse(await readFile(captured, "utf8"));
+      assert.doesNotMatch(JSON.stringify(invocation.args), /fictional-backup-user|fictional-p|p%40ss|word@/);
+      assert.equal(invocation.user, "fictional-backup-user");
+      assert.equal(invocation.password, "fictional-p@ss:word");
+    }
+    assert.equal(objects.size, 0);
+  } finally {
+    config.databaseUrl = originalUrl;
+    process.env.PATH = originalPath;
+  }
+});
+
+
+// A release must let the real dump/archive finish and record its uploaded pair before the worker exits.
+// Killing every process with SIGTERM used to interrupt pg_dump (and make tar need a second attempt).
+for (const phase of ["pg_dump", "tar"] as const) {
+  test(`worker stop drains a real ${phase} without terminating or restarting it`, { timeout: 30_000 }, async () => {
+    const locked = await sql.reserve();
+    await sql`CREATE TABLE IF NOT EXISTS backup_shutdown_probe (id integer)`;
+    await locked`BEGIN`;
+    if (phase === "pg_dump") await locked`LOCK TABLE backup_shutdown_probe IN ACCESS EXCLUSIVE MODE`;
+    if (phase === "tar") await save("uploads/synthetic.bin", randomBytes(16 * 1024 * 1024));
+    const messages: Array<{ cmd?: string; pid?: number; completed?: boolean; error?: string }> = [];
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+      import assert from "node:assert/strict";
+      import cp from "node:child_process";
+      import { syncBuiltinESMExports } from "node:module";
+      const exec = cp.execFile;
+      cp.execFile = (...args) => {
+        const child = exec(...args);
+        process.send({ cmd: args[0], pid: child.pid });
+        return child;
+      };
+      syncBuiltinESMExports();
+      const { runBackup } = await import("@aihot/backend/operations/backup");
+      const { getBoss, stopBoss } = await import("@aihot/backend/jobs/queue");
+      const { closeDb } = await import("@aihot/backend/db");
+      globalThis.fetch = async (input, init) => {
+        assert.equal(new URL(input).origin, "https://backup.invalid");
+        for await (const chunk of init.body) {} // consume the real dump/archive, never send it outside
+        return new Response(null, { status: 200 });
+      };
+      const boss = await getBoss();
+      const name = "test.backup.shutdown";
+      await boss.createQueue(name, { retryLimit: 0 });
+      await boss.work(name, { pollingIntervalSeconds: 0.5 }, async () => {
+        try { await runBackup(); process.send({ completed: true }); }
+        catch (error) { process.send({ error: error.message }); throw error; }
+      });
+      process.once("SIGTERM", async () => { await stopBoss(); await closeDb(); process.exit(0); });
+      await boss.send(name, {});
+    `], { cwd: path.resolve(import.meta.dirname, ".."), env: { ...process.env, AIHOT_DATA_DIR: config.dataDir }, detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let stderr = "";
+    child.stderr!.on("data", chunk => { stderr += String(chunk); });
+    child.on("message", message => messages.push(message as typeof messages[number]));
+    const exited = once(child, "exit");
+    const wait = async (condition: () => boolean | Promise<boolean>) => {
+      const deadline = Date.now() + 15_000;
+      while (!await condition()) {
+        assert.ok(child.exitCode === null && child.signalCode === null && Date.now() < deadline, `backup phase not reached: ${stderr} ${JSON.stringify(messages)}`);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    };
+    let held: number | undefined;
+    try {
+      await wait(() => messages.some(message => message.cmd === phase));
+      if (phase === "pg_dump") {
+        await wait(async () => (await sql`SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'pg_dump' AND wait_event_type = 'Lock'`).length > 0);
+      } else {
+        held = messages.find(message => message.cmd === phase)!.pid!;
+        process.kill(held, "SIGSTOP");
+      }
+      // The supervisor sends the graceful signal to the worker, which owns its child lifetimes.
+      process.kill(child.pid!, "SIGTERM");
+      await locked`ROLLBACK`;
+      if (held) { process.kill(held, "SIGCONT"); held = undefined; }
+      const [code, signal] = await exited;
+      assert.equal(signal, null, stderr);
+      assert.equal(code, 0, stderr);
+      assert.ok(messages.some(message => message.completed), JSON.stringify(messages));
+      assert.equal(messages.filter(message => message.cmd === phase).length, 1, "shutdown must not restart a killed backup subprocess");
+    } finally {
+      await locked`ROLLBACK`;
+      locked.release();
+      if (held) process.kill(held, "SIGCONT");
+      if (child.exitCode === null && child.signalCode === null) { process.kill(-child.pid!, "SIGKILL"); await exited; }
+    }
+  });
+}
+
+test("a real dump preserves libpq query parameter escaping", async () => {
+  const originalUrl = config.databaseUrl;
+  config.databaseUrl = `${originalUrl}${originalUrl.includes("?") ? "&" : "?"}options=-c%20statement_timeout%3D0&application_name=fictional%2Bbackup`;
+  try { assert.equal((await runBackup(NOW)).uploaded, true); }
+  finally { config.databaseUrl = originalUrl; }
 });

@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { byReportTime } from "@aihot/backend/events/digest";
 import type { DigestReport } from "@aihot/backend/publication/story-evidence";
+import { parseCasesJsonl } from "./eval-tools.ts";
 
 const ReportSchema = z.strictObject({
   id: z.string().min(1),
@@ -39,25 +40,7 @@ const CaseSchema = z.strictObject({
 
 export type DigestEvalCase = z.infer<typeof CaseSchema>;
 
-/** Blank lines and lines starting with // are skipped. */
-export function parseDigestEvalJsonl(text: string): DigestEvalCase[] {
-  const rows: DigestEvalCase[] = [];
-  const ids = new Set<string>();
-  for (const [index, raw] of text.split(/\r?\n/).entries()) {
-    const line = index + 1;
-    if (!raw.trim() || raw.trim().startsWith("//")) continue;
-    let row: DigestEvalCase;
-    try {
-      row = CaseSchema.parse(JSON.parse(raw));
-    } catch (error) {
-      throw new Error(`line ${line}: ${error instanceof z.ZodError ? z.prettifyError(error) : String(error)}`);
-    }
-    if (ids.has(row.caseId)) throw new Error(`line ${line}: duplicate caseId ${row.caseId}`);
-    ids.add(row.caseId);
-    rows.push(row);
-  }
-  return rows;
-}
+export const parseDigestEvalJsonl = (text: string): DigestEvalCase[] => parseCasesJsonl(text, CaseSchema);
 
 /**
  * An event as the site rewrites its digest from its current reports (digestReports): without the

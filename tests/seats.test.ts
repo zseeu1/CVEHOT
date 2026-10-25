@@ -31,17 +31,21 @@ after(async () => {
   await closeDb();
 });
 
+// Reports arrive a second apart, the first a minute ago: their order and the windows that end at the reader's
+// clock hold even when the VM's clock steps back (on the CI VMs by as much as 0.4 s).
+const start = Date.now() - 60_000;
 let n = 0;
 async function report(source: string, fact: number) {
   n += 1;
+  const at = new Date(start + n * 1000);
   const { articleId } = await upsertMaterial({
-    sourceId: source, url: `https://example.com/seats-${T}-${n}`, title: `Seat ${n} ${T}`, bodyText: "body", bodyHtml: "<p>body</p>", bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
+    sourceId: source, url: `https://example.com/seats-${T}-${n}`, title: `Seat ${n} ${T}`, bodyText: "body", bodyHtml: "<p>body</p>", bodyStatus: "ok", via: "fetch", publishedAt: at, discoveredAt: at,
   });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, reason_zh, score, selected, tags)
             VALUES (${articleId}, 1, 'rule', 'pass', 'industry', ${`标题${n}-${T}`}, ${`摘要${n}-${T}`}, ${`理由${n}`}, 80, true, ${[`t-${T}`]})`;
   await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${fact}, ${articleId}, 'report')`;
   await sql`UPDATE articles SET grouping_status = 'complete', grouped_at = now() WHERE id = ${articleId}`;
-  await publishArticle(articleId, { releasedAt: new Date(Date.now() - 60_000) });
+  await publishArticle(articleId, { releasedAt: at });
   return articleId;
 }
 

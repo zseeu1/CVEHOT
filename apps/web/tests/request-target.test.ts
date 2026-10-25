@@ -1,21 +1,15 @@
 // Failure cases: an origin-form // path is read as a URL authority and throws a 500; an unknown
 // double-slash path becomes a different host's root; HEAD or single-fetch data follows another rule.
 import assert from "node:assert/strict";
-import { createServer, request } from "node:http";
+import { request } from "node:http";
 import { after, before, test } from "node:test";
-import { startWebServer, type WebServer } from "./web-server.ts";
+import { fakeApi, startWebServer, type WebServer } from "./web-server.ts";
 
 let web: WebServer;
 const upstreamPaths: string[] = [];
-const api = createServer((req, res) => {
+const api = fakeApi((url, _res, req) => {
   upstreamPaths.push(req.url ?? "");
-  res.setHeader("Content-Type", "application/json");
-  if (req.url === "/api/site/meta") return res.end(JSON.stringify({ changelogVersion: null }));
-  if (req.url?.startsWith("/api/site/timeline")) return res.end(JSON.stringify({
-    cards: [], nextCursor: null, dayCounts: {}, hot: [], filters: { category: null, channel: null, tag: null },
-  }));
-  res.writeHead(404);
-  res.end("{}");
+  if (url.pathname === "/api/site/timeline") return { cards: [], nextCursor: null, dayCounts: {}, hot: [], filters: { category: null, channel: null, tag: null } };
 });
 
 before(async () => { web = await startWebServer(api); });

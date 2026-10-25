@@ -84,9 +84,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   app.get("/api/health", async (_req, reply) => {
-    const started = Date.now();
+    const started = performance.now();
     await sql`SELECT 1`;
-    return reply.header("Cache-Control", "no-store").send({ ok: true, db: "ok", ms: Date.now() - started, release: process.env.AIHOT_RELEASE ?? "dev" });
+    return reply.header("Cache-Control", "no-store").send({ ok: true, db: "ok", ms: Math.round(performance.now() - started), release: process.env.AIHOT_RELEASE ?? "dev" });
   });
 
   registerSite(app);

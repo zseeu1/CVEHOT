@@ -9,11 +9,14 @@
 // with both reports fully described is what makes the judge usable: a yes/no question with
 // "prefer no" refused half of the true merges (measured on labelled pairs).
 import { z } from "zod";
-import { beijingDate, beijingTime } from "@aihot/contracts/time";
+import { describePublicationTime } from "../sources/dates.ts";
 import { promptText, promptVersion } from "../editorial/prompts.ts";
 
 export const RELATE_PROMPT_VERSION = promptVersion("group-pair", "group-signal");
 export const BATCH_PROMPT_VERSION = promptVersion("group-batch");
+
+/** Saved original evidence per report, shared by rendering and selected-background retrieval. */
+export const GROUP_BODY_CHARS = 10_000;
 
 export const RELATIONS = ["SAME_OCCURRENCE", "SAME_STORY", "UNRELATED", "ROUNDUP"] as const;
 export type Relation = (typeof RELATIONS)[number];
@@ -23,6 +26,7 @@ export interface ReportView {
   source: string;
   firstParty: boolean;
   at: Date | null;
+  publicationTime?: string | null;
   summary: string | null;
   /** Saved source evidence for the current value judgement; identity candidates stay concise. */
   sourceText?: string | null;
@@ -88,22 +92,18 @@ export const SignalSchema = z.object({
   decisions: z.array(z.object({ id: z.string().regex(/^C[1-9]\d*$/), relation: RelationSchema, confidence: z.number().min(0).max(1) })),
 });
 
-function when(at: Date | null): string {
-  return at ? `${beijingDate(at)} ${beijingTime(at)}` : "未知";
-}
-
 export function describeReport(r: ReportView, label: string, extra = "", summaryLimit = 360): string {
   const f = r.frame;
   return [
     `【${label}】${extra}`,
     `标题：${r.title}`,
-    `来源：${r.source}${r.firstParty ? "（当事方/官方）" : ""}｜发布时间：${when(r.at)}`,
+    `来源：${r.source}${r.firstParty ? "（当事方/官方）" : ""}｜发布时间：${describePublicationTime(r.at, r.publicationTime)}`,
     `摘要：${(r.summary ?? "").slice(0, summaryLimit) || "（无）"}`,
     r.scope && r.scope !== "unknown" ? `资料范围：${r.scope === "composite" ? "多个独立发生的综合稿" : "单一具体发生或议题"}` : null,
     f && (f.subject || f.action || f.object)
       ? `事实要素：主体=${f.subject || "?"}；动作=${f.action || "?"}；对象=${f.object || "?"}；日期=${f.occurredAt || "未知"}`
       : null,
-    r.sourceText ? `【原文证据】\n${r.sourceText.slice(0, 6000)}\n【原文证据结束】` : null,
+    r.sourceText ? `【原文证据】\n${r.sourceText.slice(0, GROUP_BODY_CHARS)}\n【原文证据结束】` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -122,7 +122,7 @@ export function batchUser(query: ReportView, cands: CandidateView[], queryLabel 
     .join("\n\n");
   const background = reading.map(({ report, sourceText }, i) => [
     describeReport(report, `已公开精选阅读背景 R${i + 1}`, "（只比较信息覆盖，不是事实候选）", 2000),
-    sourceText ? `【该已选报道的原文证据】\n${sourceText.slice(0, 6000)}\n【原文证据结束】` : null,
+    sourceText ? `【该已选报道的原文证据】\n${sourceText.slice(0, GROUP_BODY_CHARS)}\n【原文证据结束】` : null,
   ].filter(Boolean).join("\n")).join("\n\n");
   return `${describeReport(query, queryLabel)}\n\n${list}${background ? `\n\n${background}` : ""}\n\n${queryLabel}与每个候选的关系是什么？${background ? "同时比较所有已公开精选内容，判断新增价值；无事实候选时 decisions=[]。" : ""}`;
 }
@@ -175,9 +175,12 @@ export function signalTarget(cands: CandidateView[], verdicts: Map<number, Verdi
 /** How sure a relation must be before a report counts as evidence that two stories are one. */
 export const TIE_MIN_CONFIDENCE = 0.8;
 
-/** A report is firmly tied to a candidate it calls the same occurrence or a direct development of. */
+/** The relations that tie a report to a candidate: the same occurrence, or a direct development of it. */
+export const TIE_RELATIONS: Relation[] = ["SAME_OCCURRENCE", "SAME_STORY"];
+
+/** A report is firmly tied to a candidate it calls the same occurrence or a direct development of (in SQL: related.ts firmTie). */
 export function firmlyTied(relation: string | undefined, confidence: number | undefined, minConfidence = TIE_MIN_CONFIDENCE): boolean {
-  return (relation === "SAME_OCCURRENCE" || relation === "SAME_STORY") && (confidence ?? 0) >= minConfidence;
+  return TIE_RELATIONS.includes(relation as Relation) && (confidence ?? 0) >= minConfidence;
 }
 
 /**

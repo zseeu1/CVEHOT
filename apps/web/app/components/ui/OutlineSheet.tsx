@@ -1,6 +1,6 @@
 // An outline as a bottom sheet (phones): an article's headings, a report's pages. The section being read
 // is marked, and choosing one scrolls there.
-import { useEffect, useState } from "react";
+import { useCurrentSection } from "../../lib/motion";
 import { Sheet } from "./Sheet";
 
 export interface OutlineEntry {
@@ -14,30 +14,8 @@ export interface OutlineEntry {
   note?: string;
 }
 
-/**
- * Scrolls an anchor to the top (its scroll margin keeps it clear of the bar) and puts it in the address
- * without a new history entry: back still leaves the page for the one it came from, at its position.
- */
-export function scrollToAnchor(id: string) {
-  const target = document.getElementById(id);
-  if (!target) return;
-  target.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-  history.replaceState(history.state, "", `${location.pathname}${location.search}#${id}`);
-}
-
 export function OutlineSheet({ open, onClose, outline, title = "目录" }: { open: boolean; onClose: () => void; outline: OutlineEntry[]; title?: string }) {
-  const [current, setCurrent] = useState<string | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    // The section being read: the last one whose start has reached the bar.
-    const bar = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--bar-h")) || 48;
-    let at: string | null = null;
-    for (const o of outline) {
-      const el = document.getElementById(o.id);
-      if (el && el.getBoundingClientRect().top <= bar + 24) at = o.id;
-    }
-    setCurrent(at);
-  }, [open, outline]);
+  const [current, go] = useCurrentSection(outline.map((o) => o.id), open);
   let n = 0;
   return (
     <Sheet open={open} onClose={onClose} title={title}>
@@ -54,7 +32,7 @@ export function OutlineSheet({ open, onClose, outline, title = "目录" }: { ope
                 onClick={(e) => {
                   e.preventDefault();
                   onClose();
-                  requestAnimationFrame(() => scrollToAnchor(o.id));
+                  requestAnimationFrame(() => go(o.id));
                 }}
                 aria-current={on ? "location" : undefined}
                 className={`flex min-h-12 items-center gap-3 rounded-tile px-2 py-2 transition-colors active:bg-bg-sunk ${on ? "bg-accent-softer text-accent" : ""} ${top ? "" : "pl-9"}`}

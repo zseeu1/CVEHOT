@@ -8,7 +8,7 @@ import { stripTags } from "../lib/text.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { dajialaConfigured, mpArticle, mpHistory, type MpArticle } from "../providers/dajiala.ts";
-import { BudgetExceededError, ProviderRejectedError } from "../providers/receipts.ts";
+import { failureKind } from "../providers/receipts.ts";
 
 const MAX_NEW_PER_CHECK = 8;
 /** Posts older than this on the first check of an account are history, not news. */
@@ -22,9 +22,9 @@ async function fetchBody(url: string, sourceId: string, identity: string): Promi
   try {
     return { body: await mpArticle(url, { subject: sourceId, identity }), passing: null };
   } catch (error) {
-    if (error instanceof BudgetExceededError) throw error;
-    const final = error instanceof ProviderRejectedError && !error.retryable;
-    return { body: null, passing: final ? null : String(error instanceof Error ? error.message : error).slice(0, 200) };
+    const kind = failureKind(error);
+    if (kind === "budget") throw error;
+    return { body: null, passing: kind === "refused" ? null : String(error instanceof Error ? error.message : error).slice(0, 200) };
   }
 }
 
@@ -75,7 +75,7 @@ export async function checkMpAccount(sourceId: string, reason: "schedule" | "man
       }
       // Mode 1 bodies are light HTML (paragraphs and image tags).
       const html = body?.content ? sanitizeBody(body.content, p.url) : null;
-      const text = body?.content ? stripTags(body.content.replace(/<\/p>|<br\s*\/?>/gi, "\n")).replace(/\n{3,}/g, "\n\n").trim() : null;
+      const text = body?.content ? stripTags(body.content) : null;
       const res = await upsertMaterial({
         sourceId,
         url: p.url,
@@ -110,7 +110,8 @@ export async function checkMpAccount(sourceId: string, reason: "schedule" | "man
     return { sourceId, status: "ok" as const, found: posts.length, created, reused: history.reused };
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-    const soft = error instanceof BudgetExceededError || (error instanceof ProviderRejectedError && error.retryable);
+    const kind = failureKind(error);
+    const soft = kind === "budget" || kind === "outage";
     await sql`
       UPDATE sources SET last_fetch_at = now(), last_error = ${message},
         fail_count = CASE WHEN ${soft} THEN fail_count ELSE fail_count + 1 END,

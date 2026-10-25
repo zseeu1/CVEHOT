@@ -4,16 +4,20 @@
 
 /**
  * 网页上的类别（筛选栏、卡片角标、RSS 分类订阅）。key 是网址和接口里的身份，上线后不要改。
- * section 是日报里的分节标题（几个类别可以共用一节，按这里的顺序排）；guide 告诉模型怎么归类。
+ * section 是日报里的分节标题（几个类别可以共用一节，按这里的顺序排）；guide 告诉结构抽取模型这一类收什么、
+ * 和相邻类别的边界在哪（总的归类原则写在 prompts/structure.md 里）。
+ * commentary 标出评论类：日报写过的事又有评论类的后续报道，只占一行快讯（报道它的信源够多时除外）。漏洞行业没有这类，不设。
  * 没归上类的资料在日报里放进最后一节。
+ * tagColor 是飞书推送卡片里跟在标题后面的这一类小标签的颜色（飞书 text_tag 的颜色名）。
+ * feedLabel 是分类 RSS 标题里的名字（不写就用 label）。公开接口、RSS 和 MCP 里要把一类并进另一类发布，写在站点设置里（site/site.ts 的 PUBLIC_CATEGORIES）。
  */
 export const CATEGORIES = [
-  { key: "exploited", label: "在野利用", section: "在野利用与紧急修补", guide: "已确认被在野利用、已列入 CISA KEV、或已被大规模扫描攻击的漏洞与攻击活动" },
-  { key: "poc", label: "PoC/复现", section: "已公开 PoC 与复现", guide: "公开了 PoC、EXP、复现步骤或完整利用细节的漏洞" },
-  { key: "advisory", label: "漏洞通告", section: "漏洞通告与补丁", guide: "厂商、CERT、GitHub 安全公告库等发布的漏洞通告、补丁与影响版本说明" },
-  { key: "supply-chain", label: "供应链", section: "供应链与依赖风险", guide: "开源仓库投毒、恶意包、依赖混淆、构建与发布凭证被滥用的风险与事件" },
-  { key: "incident", label: "攻击事件", section: "攻击事件与应急", guide: "已发生的真实攻击、勒索、数据泄露，以及应急响应与处置复盘" },
-] as const;
+  { key: "exploited", tagColor: "red", label: "在野利用", section: "在野利用与紧急修补", guide: "已确认被在野利用、已列入 CISA KEV、或已被大规模扫描攻击的漏洞与攻击活动" },
+  { key: "poc", tagColor: "orange", label: "PoC/复现", section: "已公开 PoC 与复现", guide: "公开了 PoC、EXP、复现步骤或完整利用细节的漏洞" },
+  { key: "advisory", tagColor: "blue", label: "漏洞通告", section: "漏洞通告与补丁", guide: "厂商、CERT、GitHub 安全公告库等发布的漏洞通告、补丁与影响版本说明" },
+  { key: "supply-chain", tagColor: "violet", label: "供应链", section: "供应链与依赖风险", guide: "开源仓库投毒、恶意包、依赖混淆、构建与发布凭证被滥用的风险与事件" },
+  { key: "incident", tagColor: "purple", label: "攻击事件", section: "攻击事件与应急", guide: "已发生的真实攻击、勒索、数据泄露，以及应急响应与处置复盘" },
+] as const satisfies ReadonlyArray<{ key: string; tagColor: string; label: string; feedLabel?: string; section: string; guide: string; commentary?: true }>;
 
 /**
  * 内容理解一步给每篇资料判的“内容类型”（写在 prompts/content-understanding.md 里，改了类型要同步改那份提示词）。
@@ -77,8 +81,13 @@ export const CATEGORY_BY_ITEM_TYPE: Readonly<Record<string, string>> = {
 
 // ── 厂商与组件 ──────────────────────────────────────────────────────────────────────────
 
-/** 厂商与组件主题：id → 显示名、卡片上显示的标签（null 表示只用 entity:<id> 归类）、别名。 */
-export const ENTITIES: Record<string, { name: string; displayTag: string | null; aliases: string[]; otherNames?: string[] }> = {
+/**
+ * 厂商与组件主题：id → 显示名、卡片上显示的标签（null 表示只用 entity:<id> 归类）、别名。
+ * aliases 给结构抽取模型看；orgNames 是这家厂商发消息时开头用的组织名（公司、实验室、团队），
+ * 在它自己的主题页上读者知道说的是谁，可以省去；otherNames 是厂商的其他称呼（官方账号名、子品牌）。
+ * 所有这些名字都用来认出说的是哪家，比如把事实的主体对到发布方。
+ */
+export const ENTITIES: Record<string, { name: string; displayTag: string | null; aliases: string[]; orgNames?: string[]; otherNames?: string[] }> = {
   microsoft: { name: "Microsoft", displayTag: "Microsoft", aliases: ["Microsoft", "微软", "Windows", "MSRC", "Exchange", "SharePoint", "Office", "Hyper-V"] },
   google: { name: "Google", displayTag: "Google", aliases: ["Google", "谷歌", "Chrome", "Chromium", "Android"] },
   apple: { name: "Apple", displayTag: "Apple", aliases: ["Apple", "苹果", "macOS", "iOS", "Safari", "WebKit"] },

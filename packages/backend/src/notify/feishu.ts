@@ -4,7 +4,7 @@
 // Everything outward is off unless explicitly enabled (development and tests stay silent).
 import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import { beijingDate, beijingTime } from "@aihot/contracts/time";
+import { beijingStamp } from "@aihot/contracts/time";
 import { config, credential } from "../config.ts";
 import { sql } from "../db.ts";
 
@@ -81,24 +81,12 @@ export interface Finding {
   detail?: string;
   /** When the problem began, when known; otherwise when it was first seen. */
   since?: Date;
-  /**
-   * The owner hears of it at once, even where a site's responder (modules.ts) hands problems to someone else
-   * first: only the owner can act (paying, renewing, a device beside them, a judgement on content), or
-   * everything has stopped (the whole site, or the worker that runs the checks).
-   */
-  owner?: true;
+  /** New evidence after a dated closure reopens a source follow-up under the same key. */
+  observedAt?: Date;
 }
 
 const MARK: Record<Exclude<Level, "later">, string> = { now: "🔴", today: "🟠" };
 
-/** "9月29日" in Beijing time. */
-export function beijingDay(at: Date | string | number): string {
-  const [, m, d] = beijingDate(at).split("-").map(Number);
-  return `${m}月${d}日`;
-}
-
-/** "9月29日 13:40" in Beijing time. */
-export const beijingStamp = (at: Date | string | number) => `${beijingDay(at)} ${beijingTime(at)}`;
 
 export function duration(ms: number): string {
   const min = Math.max(1, Math.round(ms / 60_000));

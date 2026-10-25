@@ -1,15 +1,10 @@
-// Which models a step may use (admin) and whether it is sent an image (runtime) read the same flag.
+// Which models the admin may choose for a step: only a step that needs images refuses a text model.
 import "./setup.ts";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeDb } from "@aihot/backend/db";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
-import {
-  CAPABILITIES,
-  capabilityAcceptsModel,
-  modelFor,
-  modelSupportsVision,
-} from "@aihot/backend/editorial/models";
+import { CAPABILITIES, capabilityAcceptsModel, modelFor } from "@aihot/backend/editorial/models";
 import { MODELS } from "@aihot/backend/providers/llm";
 
 after(closeDb);
@@ -29,11 +24,4 @@ test("every step takes a model that reads images; only a step that needs images 
 
   const overview = await modelsOverview(1);
   assert.equal(overview.capabilities.find((capability) => capability.key === "understand")?.vision, false);
-});
-
-test("runtime image attachment is explicit rather than probing presets with unspecified vision support", () => {
-  assert.equal(modelSupportsVision("qwen3-vl-flash"), true);
-  assert.equal(modelSupportsVision("glm-5.3-flash"), true);
-  assert.equal(modelSupportsVision("qwen3.8-flash"), false);
-  assert.equal(modelSupportsVision("default"), process.env.LLM_VISION === "true");
 });

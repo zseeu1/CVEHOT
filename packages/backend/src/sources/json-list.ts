@@ -1,8 +1,10 @@
 // JSON sources: plain JSON APIs, JSON embedded in HTML (script tags, window variables).
 import { credential } from "../config.ts";
+import { languageHeaders, requireOk } from "../lib/http-fetch.ts";
+import { JINA_PREFIX, jinaRead } from "../providers/jina.ts";
 import { fetchListing } from "./listing-fetch.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { parseLooseDate } from "./dates.ts";
+import { readPublicationDate, type PublicationDate } from "./dates.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
@@ -40,33 +42,21 @@ export function renderTemplate(template: string, item: unknown): string | null {
   return missing ? null : out;
 }
 
-/** "2026-09-30 17:43:58": a date and time without a zone, which Date.parse would read in the server's zone. */
-const ZONELESS_TIME = /^\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
-
-function toDate(v: unknown, unit: string | undefined, utcOffset: string | undefined): Date | null {
-  if (v === null || v === undefined || v === "") return null;
-  // JSON can hold a value nothing converts ({"toString": null}, or a list of one): it is no date, and the
-  // items after it are still read.
+/** Calendar days and exact epoch/ISO times preserve the source's stated precision. */
+function toDate(v: unknown, unit: string | undefined, utcOffset: string | undefined): PublicationDate {
+  const unknown = { publishedAt: null, publicationTime: null };
+  if (v === null || v === undefined || v === "") return unknown;
   let text: string;
-  try {
-    text = String(v).trim();
-  } catch {
-    return null;
-  }
+  try { text = String(v).trim(); } catch { return unknown; }
   if (unit === "epoch_ms" || unit === "epoch_s") {
     const date = new Date(Number(text) * (unit === "epoch_s" ? 1000 : 1));
-    return Number.isFinite(date.getTime()) ? date : null;
+    return Number.isFinite(date.getTime()) ? { publishedAt: date, publicationTime: date.toISOString() } : unknown;
   }
-  // 20260922: a calendar day at UTC midnight (some list APIs give dates as yyyymmdd).
   if (unit === "yyyymmdd") {
     const m = /^(\d{4})(\d{2})(\d{2})$/.exec(text);
-    const d = m ? new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`) : null;
-    return d && Number.isFinite(d.getTime()) && d.toISOString().startsWith(`${m![1]}-${m![2]}-${m![3]}`) ? d : null;
+    return m ? readPublicationDate(`${m[1]}-${m[2]}-${m[3]}`, utcOffset) : unknown;
   }
-  // A time without a zone is in the source's offset, as list pages read it; any other text as Date.parse reads it.
-  if (ZONELESS_TIME.test(text)) return parseLooseDate(text, utcOffset);
-  const t = Date.parse(text);
-  return Number.isFinite(t) ? new Date(t) : null;
+  return readPublicationDate(text, utcOffset);
 }
 
 function findKey(obj: unknown, key: string, depth = 0): unknown {
@@ -82,6 +72,27 @@ function findKey(obj: unknown, key: string, depth = 0): unknown {
   return undefined;
 }
 
+/** Where the object or array literal starting at `start` ends (exclusive), skipping brackets inside strings; -1 when it does not. */
+function literalEnd(text: string, start: number): number {
+  let depth = 0, inStr: string | null = null, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") inStr = ch;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
 function embeddedJson(html: string, source: SourceRow): unknown {
   const mode = source.config.mode;
   if (mode === "html_window_var") {
@@ -90,23 +101,8 @@ function embeddedJson(html: string, source: SourceRow): unknown {
     const m = re.exec(html);
     if (!m) throw new FetchError(`window.${name} not found`);
     const start = m.index + m[0].length;
-    // Balanced-brace scan to find the object literal's end.
-    let depth = 0, inStr: string | null = null, esc = false;
-    for (let i = start; i < html.length; i++) {
-      const ch = html[i]!;
-      if (inStr) {
-        if (esc) esc = false;
-        else if (ch === "\\") esc = true;
-        else if (ch === inStr) inStr = null;
-        continue;
-      }
-      if (ch === '"' || ch === "'") inStr = ch;
-      else if (ch === "{" || ch === "[") depth++;
-      else if (ch === "}" || ch === "]") {
-        depth--;
-        if (depth === 0) return JSON.parse(html.slice(start, i + 1));
-      }
-    }
+    const end = literalEnd(html, start);
+    if (end > 0) return JSON.parse(html.slice(start, end));
     throw new FetchError(`window.${name} not terminated`);
   }
   // html_json_key: scan JSON script blocks (e.g. __NEXT_DATA__) for the key.
@@ -129,13 +125,11 @@ function embeddedJson(html: string, source: SourceRow): unknown {
     if (flight) {
       try {
         const decoded = JSON.parse(`"${flight[1]}"`) as string;
-        const idx = decoded.indexOf(`"${key}"`);
-        if (idx >= 0) {
-          const objStart = decoded.lastIndexOf("{", idx);
-          const parsed = JSON.parse(decoded.slice(objStart, decoded.indexOf("]", idx) + 1) + "}");
-          const found = findKey(parsed, key);
-          if (found) return { [key]: found };
-        }
+        // The key's own array, up to its matching bracket: its items may hold arrays of their own.
+        const at = new RegExp(`"${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:\\s*\\[`).exec(decoded);
+        const start = at ? at.index + at[0].length - 1 : -1;
+        const end = start < 0 ? -1 : literalEnd(decoded, start);
+        if (end > 0) return { [key]: JSON.parse(decoded.slice(start, end)) };
       } catch {
         // keep scanning
       }
@@ -147,24 +141,27 @@ function embeddedJson(html: string, source: SourceRow): unknown {
 export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
   const c = source.config;
   const url = String(c.url ?? "");
-  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9", ...(c.headers ?? {}) };
+  const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9", ...languageHeaders(c.acceptLanguage), ...(c.headers ?? {}) };
   if (/^https:\/\/api\.github\.com\//.test(url)) {
     const token = credential("collectors", "GITHUB_TOKEN");
     if (token) headers.authorization = `Bearer ${token}`;
   }
-  const res = await fetchListing(url, {
-    redirectPolicy: "same-origin",
-    method: c.method ?? "GET",
-    headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
-    body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
-    timeoutMs: 25_000,
-  });
-  if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
+  const embedded = c.mode === "html_json_key" || c.mode === "html_window_var";
+  // A page that blocks our addresses can be read through Jina's rendered HTML, which keeps its scripts.
+  const text = embedded && url.startsWith(JINA_PREFIX)
+    ? (await jinaRead(url.slice(JINA_PREFIX.length), { purpose: "source_listing", subject: `source:${source.id}`, format: "html", perRead: true })).markdown
+    : requireOk(await fetchListing(url, {
+      redirectPolicy: "same-origin",
+      method: c.method ?? "GET",
+      headers: c.bodyJson ? { ...headers, "content-type": "application/json" } : headers,
+      body: c.bodyJson ? JSON.stringify(c.bodyJson) : undefined,
+      timeoutMs: 25_000,
+    })).text();
   let data: unknown;
-  if (c.mode === "html_json_key" || c.mode === "html_window_var") data = embeddedJson(res.text(), source);
+  if (embedded) data = embeddedJson(text, source);
   else {
     try {
-      data = JSON.parse(res.text());
+      data = JSON.parse(text);
     } catch {
       throw new FetchError("response is not JSON");
     }
@@ -187,7 +184,7 @@ export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
       url,
       title: collapseWhitespace(stripTags(title)),
       author: firstString(item, c.authorPaths),
-      publishedAt: toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit, c.publishedAtUtcOffset),
+      ...toDate(getPath(item, c.publishedAtPath), c.publishedAtUnit, c.publishedAtUtcOffset),
       excerpt: summary ? collapseWhitespace(stripTags(summary)).slice(0, 2000) : null,
       bodyText: summaryIsBody ? stripTags(summary!) : null,
       bodyStatus: summaryIsBody ? "ok" : "pending",

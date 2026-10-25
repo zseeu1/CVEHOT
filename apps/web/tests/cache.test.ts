@@ -1,10 +1,9 @@
 // Run after `npm run build -w @aihot/web`. Real production server/router, synthetic HTTP API only.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { UNSAFE_decodeViaTurboStream } from "react-router";
-import { startWebServer, type WebServer } from "./web-server.ts";
+import { fakeApi, startWebServer, type WebServer } from "./web-server.ts";
 
 let web: WebServer;
 let origin: string;
@@ -12,35 +11,37 @@ let deadline: number;
 /** Root metadata answers only after the selected deadline has passed: a slow sibling loader. */
 let metaAfterDeadline = false;
 const apiCookies: Array<string | undefined> = [];
-const api = createServer((req, res) => {
-  const url = new URL(req.url!, "http://api.local");
+const api = fakeApi(async (url, res, req) => {
   apiCookies.push(req.headers.cookie);
-  res.setHeader("Content-Type", "application/json");
   if (url.pathname === "/api/site/meta") {
-    const respond = () => res.end(JSON.stringify({ changelogVersion: "2026-09-28T12:00" }));
-    return metaAfterDeadline ? setTimeout(respond, deadline * 1000 - Date.now() + 50) : respond();
+    // Past the deadline on the wall clock the server reads: timers run on another clock, and a CI VM
+    // stepping its wall clock back mid-wait would otherwise answer before the deadline.
+    while (metaAfterDeadline && Date.now() < deadline * 1000 + 50) await new Promise((resolve) => setTimeout(resolve, deadline * 1000 + 50 - Date.now()));
+    return { changelogVersion: "2026-09-28T12:00" };
   }
   if (url.pathname === "/api/site/timeline") {
     const filters = { channel: "all", category: url.searchParams.get("category"), tag: null };
     res.setHeader("X-Accel-Expires", `@${deadline}`);
     res.setHeader("Cache-Control", "public, max-age=30, s-maxage=30");
-    return res.end(JSON.stringify({ filters, cards: [], nextCursor: null, dayCounts: [], hot: null }));
+    return { filters, cards: [], nextCursor: null, dayCounts: [], hot: null };
   }
-  if (url.pathname === "/api/site/hot") return res.end(JSON.stringify({ entries: [] }));
-  if (url.pathname === "/api/site/echo-client") return res.end(JSON.stringify({ forwarded: req.headers["x-forwarded-for"], real: req.headers["x-real-ip"] }));
+  if (url.pathname === "/api/site/hot") return { entries: [] };
+  if (url.pathname === "/api/site/echo-client") return { forwarded: req.headers["x-forwarded-for"], real: req.headers["x-real-ip"] };
   if (url.pathname === "/api/site/download") {
     res.setHeader("Content-Type", "text/markdown; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="article.md"');
     return res.end("# Article");
   }
-  if (url.pathname === "/api/site/items/long-lived") return res.end(JSON.stringify({ id: "long-lived", title: "t" }));
-  if (url.pathname === "/api/site/contact") return res.end(JSON.stringify({ wechatQr: "/qr.png", feishuQr: "/qr.png" }));
+  if (url.pathname === "/api/site/items/long-lived") return { id: "long-lived", title: "t" };
+  if (url.pathname === "/api/site/contact") return { wechatQr: "/qr.png", feishuQr: "/qr.png" };
   if (url.pathname === "/api/site/stories/merged") {
     res.statusCode = 308;
-    return res.end(JSON.stringify({ mergedInto: "surviving-story" }));
+    return { mergedInto: "surviving-story" };
   }
-  res.statusCode = url.pathname.startsWith("/api/admin/") ? 401 : 404;
-  res.end(JSON.stringify({ code: "not_found" }));
+  if (url.pathname.startsWith("/api/admin/")) {
+    res.statusCode = 401;
+    return { code: "not_found" };
+  }
 });
 
 before(async () => {
@@ -88,10 +89,11 @@ test("HTML and navigation share freshness; cookies do not personalize public res
   assert.equal(html.status, 200);
   assert.equal(html.headers.get("X-Accel-Expires"), `@${deadline}`);
   assert.match(await html.text(), /精选/);
-  const plain = await fetch(`${origin}/about.data`);
-  const signedIn = await fetch(`${origin}/about.data?_routes=root`, { headers: { cookie: "admin_session=private; reader=returning" } });
+  // The api's deadline also fixes the result's own expiry, so reads seconds apart compare byte for byte.
+  const plain = await fetch(`${origin}/_.data`);
+  const signedIn = await fetch(`${origin}/_.data?_routes=root`, { headers: { cookie: "admin_session=private; reader=returning" } });
   assert.match(plain.headers.get("Cache-Control")!, /^public,/);
-  assert.match(plain.headers.get("X-Accel-Expires")!, /^@\d+$/);
+  assert.equal(plain.headers.get("X-Accel-Expires"), `@${deadline}`);
   assert.equal(signedIn.headers.get("Set-Cookie"), null);
   assert.equal(await signedIn.text(), await plain.text());
   assert.ok(apiCookies.every((cookie) => !cookie));
@@ -191,7 +193,46 @@ test("browser caching preserves noindex and private sign-in responses", async ()
   await login.text();
 });
 
+test("a signed-in admin is sent past the sign-in page", async () => {
+  const api = fakeApi((url, res, req) => {
+    if (url.pathname === "/api/admin/me") {
+      if (req.headers.cookie?.includes("aihot_admin=fixture")) return { name: "Fixture admin", csrf: "fixture", dev: false };
+      res.statusCode = 401;
+      return { code: "unauthorized" };
+    }
+    if (url.pathname === "/api/auth/options") return { password: true, feishu: false };
+  });
+  const signedIn = await startWebServer(api);
+  try {
+    const res = await fetch(`${signedIn.origin}/admin/login?return=%2Fadmin%2Fcontent`, { headers: { cookie: "aihot_admin=fixture" }, redirect: "manual" });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), "/admin/content");
+    await res.text();
+    for (const target of ["javascript:alert(1)", "//evil.example/admin", "https://evil.example/admin"]) {
+      const away = await fetch(`${signedIn.origin}/admin/login?return=${encodeURIComponent(target)}`, { headers: { cookie: "aihot_admin=fixture" }, redirect: "manual" });
+      assert.equal(away.headers.get("location"), "/admin", target);
+      await away.text();
+    }
+    const anonymous = await fetch(`${signedIn.origin}/admin/login?return=%2Fadmin`, { redirect: "manual" });
+    assert.equal(anonymous.status, 200, "without a session the page still offers the ways in");
+    await anonymous.text();
+  } finally {
+    await signedIn.stop();
+  }
+});
+
 test("a visitor cannot name its own address to the api without a trusted proxy in front", async () => {
   const res = await fetch(`${origin}/api/site/echo-client`, { headers: { "X-Forwarded-For": "6.6.6.6", "X-Real-IP": "6.6.6.6" } });
   assert.deepEqual(await res.json(), { forwarded: "127.0.0.1", real: "127.0.0.1" });
+});
+
+// The real listener must own its ephemeral port; reserving and releasing one before spawn races
+// another CI process. Canonical URLs still have to identify the listener's actual address.
+test("a web server assigned port zero serves its own canonical address", async () => {
+  const ephemeral = await startWebServer(fakeApi(), { WEB_PORT: "0", SITE_URL: "http://127.0.0.1:0" });
+  try {
+    const response = await fetch(`${ephemeral.origin}/about`);
+    assert.equal(response.status, 200);
+    assert.ok((await response.text()).includes(`rel="canonical" href="${ephemeral.origin}/about"`));
+  } finally { await ephemeral.stop(); }
 });

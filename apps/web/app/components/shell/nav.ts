@@ -1,7 +1,7 @@
 // Site navigation in one place: the desktop sidebar's sections and the phone tab bar's tabs, the engine's
 // and the site's modules'.
 import type { ReactNode } from "react";
-import { subjectAfter, withSubject } from "@aihot/site";
+import { NAV, subjectAfter, withSubject } from "@aihot/site";
 import { webModules } from "../../site-modules";
 import {
   IconBolt, IconBookmark, IconDoc, IconFlame, IconGrid, IconHeart, IconHistory, IconList, IconMessage, IconPlug, IconUser,
@@ -40,6 +40,24 @@ const SECTIONS: Array<{ title: string; items: NavItem[] }> = [
   },
 ];
 
+/** Whether an engine page is a way in from the navigation (site.ts NAV.hidden); a hidden page still opens. */
+export const inNav = (to: string) => !(NAV.hidden as readonly string[]).includes(to);
+
+const UP = {
+  "/hot": { name: "热点榜", back: "热点", tab: "hot" },
+  "/topics": { name: "主题", back: "全部主题", tab: "me" },
+} as const;
+
+/**
+ * Where pages under a navigation entry lead back up to: the entry, or 精选 in its place while the site hides
+ * it. `name` is for breadcrumbs and desktop back links (热点榜), `back` for the phone bar (热点), `tab` the
+ * phone tab it sits under, `crumbs` its breadcrumb after the site's home.
+ */
+export function navUp(entry: keyof typeof UP): { to: string; name: string; back: string; tab: TabKey; crumbs: Array<{ name: string; path: string }> } {
+  if (!inNav(entry)) return { to: "/", name: "精选", back: "精选", tab: "featured", crumbs: [] };
+  return { to: entry, ...UP[entry], crumbs: [{ name: UP[entry].name, path: entry }] };
+}
+
 /**
  * The sidebar: the engine's sections with the modules' between 内容 and 更多; a module naming a section
  * that is already there adds to it.
@@ -47,7 +65,7 @@ const SECTIONS: Array<{ title: string; items: NavItem[] }> = [
 export function sidebar(): Array<{ title: string; items: NavItem[] }> {
   const [content, ...rest] = SECTIONS;
   const more = rest.pop()!;
-  const sections = [content!, ...rest].map((s) => ({ ...s, items: [...s.items] }));
+  const sections = [content!, ...rest].map((s) => ({ ...s, items: s.items.filter((i) => inNav(i.to)) }));
   for (const m of webModules()) {
     if (!m.sidebar) continue;
     const section = sections.find((s) => s.title === m.sidebar!.section);
@@ -94,5 +112,5 @@ const ENGINE_TABS: Tab[] = [
 
 /** The tab bar: the engine's, the modules' before 我的. */
 export function tabs(): Tab[] {
-  return [...ENGINE_TABS.slice(0, -1), ...webModules().flatMap((m) => m.tabs ?? []), ENGINE_TABS.at(-1)!];
+  return [...ENGINE_TABS.slice(0, -1).filter((t) => inNav(t.to)), ...webModules().flatMap((m) => m.tabs ?? []), ENGINE_TABS.at(-1)!];
 }

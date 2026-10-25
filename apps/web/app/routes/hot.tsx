@@ -12,9 +12,11 @@ import { IconChevronDown, IconInfo } from "../components/icons";
 import { Sparkline } from "../features/hot/Sparkline";
 import { Faces } from "../features/hot/Faces";
 import { PhoneBar } from "../components/shell/PhoneBar";
+import { navUp } from "../components/shell/nav";
+import { scrollBehavior } from "../lib/motion";
 import type { Screen } from "../components/shell/screens";
 
-export const handle: Screen = { tab: "hot", name: "热点" };
+export const handle: Screen = { tab: navUp("/hot").tab, name: "热点" };
 export { pageHeaders as headers } from "../lib/api.server";
 export const { clientLoader, shouldRevalidate } = pageReuse<typeof loader>();
 
@@ -25,7 +27,7 @@ export async function loader({ request }: { request: Request }) {
 export function meta() {
   return pageMeta({
     title: withSubject("热点榜"),
-    description: "过去 48 小时最该关注的 10 个漏洞：按在野利用、公开 PoC、权威源收录与新鲜度排序。",
+description: "过去 48 小时最该关注的 10 个漏洞：按在野利用、公开 PoC、权威源收录与新鲜度排序。",
     path: "/hot",
     image: "/og/pages/hot.png",
   });
@@ -224,7 +226,7 @@ function showMethod() {
   const method = document.getElementById("hot-method") as HTMLDetailsElement | null;
   if (!method) return;
   method.open = true;
-  method.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+  method.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 }
 
 export default function HotPage() {
@@ -319,7 +321,7 @@ export default function HotPage() {
           </span>
         </summary>
         <div className="max-w-[760px] space-y-2 pb-2 pl-[21px] pt-2 leading-[1.75] text-ink-3">
-          <p>榜单统计过去 48 小时的事件，按<strong>关注优先级</strong>排序——衡量的是这个漏洞现在有多值得关注，不是有多少人在聊。</p>
+<p>榜单统计过去 48 小时的事件，按<strong>关注优先级</strong>排序——衡量的是这个漏洞现在有多值得关注，不是有多少人在聊。</p>
           <p>计分看四件事：是否已在野利用、是否已有公开 PoC、有多少权威源收录、离现在多久。分越高越该先看，满分 100。</p>
           <p>卡片上的折线是过去 24 小时覆盖这件事的来源数，只比较持续覆盖的同一组信源；缺少可比数据时留空。</p>
           <p>信源名单只展示可公开阅读的报道来源。点击事件可查看各方报道与观点。</p>

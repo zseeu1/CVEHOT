@@ -2,7 +2,11 @@
 // proxy, always behind receipts and the per-minute/hour/day budget (any zero stops it).
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
+import { assertPageContent, contentDocument, UnavailablePageError } from "../lib/page-content.ts";
 import { assertAccepted, paidRequest } from "./receipts.ts";
+
+/** A source address read through Jina: this prefix, then the page's own address. */
+export const JINA_PREFIX = "https://r.jina.ai/";
 
 /** Jina's answer starts with header lines (Title, URL Source, Published Time); the page follows this line. */
 const CONTENT = "\nMarkdown Content:\n";
@@ -43,5 +47,15 @@ export async function jinaRead(
   );
   const raw = String((receipt.response as { text?: string })?.text ?? "");
   const at = raw.indexOf(CONTENT);
-  return { markdown: (at < 0 ? raw : raw.slice(at + CONTENT.length)).trim(), raw, receiptId: receipt.receiptId };
+  const markdown = (at < 0 ? raw : raw.slice(at + CONTENT.length)).trim();
+  // The renderer has been paid even when the target failed. Validate after saving its receipt,
+  // and only read protocol warnings before Markdown Content (an article may quote the same words).
+  if (opts.format === "html") contentDocument(raw);
+  else {
+    const header = at < 0 ? "" : raw.slice(0, at);
+    const failure = /^Warning:.*(?:Target URL returned error [45]\d\d\b|requiring CAPTCHA).*$/im.exec(header);
+    if (failure) throw new UnavailablePageError(failure[0]);
+    assertPageContent(/^Title:\s*(.*)$/im.exec(header)?.[1] ?? "", markdown);
+  }
+  return { markdown, raw, receiptId: receipt.receiptId };
 }

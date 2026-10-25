@@ -32,3 +32,11 @@ test("a paused external source rejects pushed items without recording a successf
   await sql`UPDATE sources SET enabled = true WHERE id = ${sourceId}`;
   assert.deepEqual(await ingestItems({ sourceId, items: [{ title: "New report", url: `https://example.org/${sourceId}` }] }), { ok: true, created: 1 });
 });
+
+test("an externally reported calendar day stays date-only through storage", async () => {
+  const sourceId = `test-date-ingest-${tag()}`;
+  await ingestItems({ sourceId, items: [{ title: "Calendar day", url: `https://example.org/${sourceId}`, publishedAt: "2026-10-13" }] });
+  const [row] = await sql`SELECT publication_time, published_at_claim FROM articles WHERE source_id=${sourceId}`;
+  assert.equal(row!.publication_time, "2026-10-13");
+  assert.equal(row!.published_at_claim.toISOString(), "2026-10-13T00:00:00.000Z");
+});

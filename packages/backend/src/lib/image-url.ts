@@ -8,6 +8,7 @@ const TRACKING_HOSTS = new Set([
 ]);
 
 export function isNonArticleImage(src: string, width?: string, height?: string): boolean {
+  if (/^data:/i.test(src) && !/^data:image\/[a-z0-9.+-]+[;,]/i.test(src)) return true;
   if (width !== undefined && height !== undefined && Number(width) <= 1 && Number(height) <= 1) return true;
   try {
     if (TRACKING_HOSTS.has(new URL(src).hostname)) return true;

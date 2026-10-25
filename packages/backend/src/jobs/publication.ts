@@ -1,12 +1,19 @@
 // Publication jobs: re-deriving a whole source after an admin change.
 import type { PgBoss } from "pg-boss";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 import { republishSource } from "../publication/publish.ts";
 import { computeHotRanking } from "../events/hot.ts";
 import { emit } from "../modules.ts";
-import { QUEUES, work } from "./queue.ts";
+import { enqueue, QUEUES, work } from "./queue.ts";
 
 export const republishKey = (sourceId: string) => `republish.source:${sourceId}`;
+
+/** Re-derives a source's public rows (in the worker) after a change to fields they are derived from. */
+export async function requestRepublish(tx: Db, sourceId: string, actor: string) {
+  await tx`INSERT INTO settings (key, value, updated_by) VALUES (${republishKey(sourceId)}, ${tx.json({ status: "queued", queuedAt: new Date().toISOString() })}, ${actor})
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
+  await enqueue(QUEUES.republishSource, { sourceId }, { singletonKey: sourceId }, tx);
+}
 
 async function progress(sourceId: string, value: Record<string, unknown>) {
   await sql`INSERT INTO settings (key, value, updated_by) VALUES (${republishKey(sourceId)}, ${sql.json(value as never)}, 'worker')

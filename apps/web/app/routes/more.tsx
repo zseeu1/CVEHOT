@@ -4,13 +4,16 @@ import { POLICY, SITE } from "@aihot/site";
 import type { loader as rootLoader } from "../root";
 import { useChangelogDot } from "../components/shell/Sidebar";
 import { PhoneBar } from "../components/shell/PhoneBar";
+import { inNav } from "../components/shell/nav";
 import type { Screen } from "../components/shell/screens";
 import { edgeTtl } from "../lib/api.server";
 import { webModules } from "../site-modules";
 import { pageMeta } from "../lib/seo";
-import { useStarred } from "../lib/local-state";
+import { setFontPreference, useFontPreference, useStarred } from "../lib/local-state";
+import { Select } from "../components/ui/Controls";
 import { ThemeSwitch } from "../components/shell/ThemeSwitch";
 import { AccentSwitch } from "../components/shell/AccentSwitch";
+import { Filings } from "../components/shell/Filings";
 import { IconBookmark, IconChevronRight, IconGrid, IconHeart, IconMessage, IconMoon, IconPalette, IconPlug, IconSparkles } from "../components/icons";
 
 export const handle: Screen = { tab: "me", name: "我的" };
@@ -35,7 +38,7 @@ const agentWays = () => [...webModules().flatMap((m) => m.agentWays ?? []), "MCP
 /** The modules' tools first, then the engine's. */
 const tools = (): Row[] => [
   ...webModules().flatMap((m) => m.tools ?? []),
-  { to: "/topics", label: "主题", icon: <IconGrid size={20} /> },
+  ...(inNav("/topics") ? [{ to: "/topics", label: "主题", icon: <IconGrid size={20} /> }] : []),
   { to: "/agent", label: "Agent 接入", icon: <IconPlug size={20} />, detail: agentWays().slice(0, 3).join(" · ") },
 ];
 
@@ -68,6 +71,7 @@ export default function MorePage() {
   const root = useRouteLoaderData<typeof rootLoader>("root");
   const changelogDot = useChangelogDot(root?.changelogVersion ?? null);
   const starred = useStarred();
+  const font = useFontPreference();
   // The count is this browser's: shown once the page runs here, never in the shared server copy.
   const [here, setHere] = useState(false);
   useEffect(() => setHere(true), []);
@@ -86,11 +90,21 @@ export default function MorePage() {
             <ThemeSwitch className="w-[126px]" />
           </li>
           <li className="flex min-h-[56px] items-center gap-3 px-4 text-[16px] font-medium text-ink">
+          </li>
+          <li className="flex min-h-[56px] items-center gap-3 px-4 text-[16px] font-medium text-ink">
             <span className="text-ink-3">
               <IconPalette size={20} />
             </span>
             <span className="flex-1">主题色</span>
             <AccentSwitch className="w-[158px] shrink-0" />
+          </li>
+          <li className="flex min-h-[56px] items-center gap-3 px-4 text-[16px] font-medium text-ink">
+            <span className="w-5 text-center text-ink-3" aria-hidden="true">Aa</span>
+            <span className="flex-1">字体</span>
+            <Select aria-label="字体" value={font ?? "system"} onChange={(e) => setFontPreference(e.target.value === "browser" ? "browser" : null)}>
+              <option value="system">默认字体</option>
+              <option value="browser">浏览器默认字体</option>
+            </Select>
           </li>
         </Group>
         <Group title="工具与入口">
@@ -109,7 +123,7 @@ export default function MorePage() {
         <Link viewTransition to="/privacy" className="hover:text-ink-2">隐私说明</Link>
         <a href="/feed.xml" className="hover:text-ink-2">RSS</a>
         {SITE.github && <a href={SITE.github} target="_blank" rel="noopener noreferrer" className="hover:text-ink-2">GitHub 开源</a>}
-        {SITE.icp && <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" className="hover:text-ink-2">{SITE.icp}</a>}
+        <Filings className="hover:text-ink-2" badgeSize={13} />
       </div>
     </div>
   );

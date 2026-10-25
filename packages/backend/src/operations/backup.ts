@@ -7,7 +7,8 @@ import { createReadStream } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { config, credential } from "../config.ts";
+import { beijingDate, beijingWeekday } from "@aihot/contracts/time";
+import { config } from "../config.ts";
 import { sql } from "../db.ts";
 import { screenshotsForwarded } from "./feedback.ts";
 
@@ -27,14 +28,14 @@ export function backupConfigured(): boolean {
   return store() !== null;
 }
 
+/** The object store, from the environment (backend.env); named one by one so the template check sees them. */
 function store(): Store | null {
-  const get = (k: string) => process.env[k] || credential("integrations", k) || null;
-  const secretId = get("DB_BACKUP_STORE_SECRET_ID");
-  const secretKey = get("DB_BACKUP_STORE_SECRET_KEY");
-  const bucket = get("DB_BACKUP_STORE_BUCKET");
-  const region = get("DB_BACKUP_STORE_REGION");
+  const secretId = process.env.DB_BACKUP_STORE_SECRET_ID;
+  const secretKey = process.env.DB_BACKUP_STORE_SECRET_KEY;
+  const bucket = process.env.DB_BACKUP_STORE_BUCKET;
+  const region = process.env.DB_BACKUP_STORE_REGION;
   if (!secretId || !secretKey || !bucket || !region) return null;
-  const domain = get("DB_BACKUP_STORE_DOMAIN");
+  const domain = process.env.DB_BACKUP_STORE_DOMAIN;
   return { secretId, secretKey, bucket, region, endpoint: domain ? `https://${domain.replace(/^https?:\/\//, "")}` : `https://${bucket}.cos.${region}.myqcloud.com` };
 }
 
@@ -82,7 +83,23 @@ export async function runBackup(now = new Date()) {
   // Named after the database ("news_db" → news-db-…), so two databases backed up into one store stay apart.
   const name = sql.options.database.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const dump = path.join(dir, `${name}-${stamp}.dump`);
-  await run("pg_dump", ["--format=custom", "--compress=6", "--no-owner", "--file", dump, config.databaseUrl], { maxBuffer: 16 * 1024 * 1024 });
+  // execFile includes argv in failures. Give libpq credentials through its environment so neither
+  // process listings nor a failed job's stored error contain them; keep other connection options.
+  const connection = new URL(config.databaseUrl);
+  const env = { ...process.env,
+    ...(connection.username ? { PGUSER: decodeURIComponent(connection.username) } : {}),
+    ...(connection.password ? { PGPASSWORD: decodeURIComponent(connection.password) } : {}),
+  };
+  connection.username = connection.password = "";
+  // libpq decodes percent escapes but not form-style '+'. Keep non-credential options byte-for-byte.
+  connection.search = connection.search.slice(1).split("&").filter(option => {
+    const separator = option.indexOf("=");
+    const key = decodeURIComponent(option.slice(0, separator));
+    if (key !== "user" && key !== "password") return true;
+    env[key === "user" ? "PGUSER" : "PGPASSWORD"] = decodeURIComponent(option.slice(separator + 1));
+    return false;
+  }).join("&");
+  await run("pg_dump", ["--format=custom", "--compress=6", "--no-owner", "--file", dump, connection.href], { env, maxBuffer: 16 * 1024 * 1024 });
   // Verify before shipping: the archive must list cleanly.
   await run("pg_restore", ["--list", dump], { maxBuffer: 64 * 1024 * 1024 });
   const files = path.join(dir, `${name}-files-${stamp}.tar.gz`);
@@ -111,10 +128,10 @@ export async function runBackup(now = new Date()) {
     });
   }
   const out: Array<{ key: string; bytes: number; sha256: string }> = [];
-  const bj = new Date(now.getTime() + 8 * 3600_000);
+  const today = beijingDate(now);
   const prefixes = ["daily"];
-  if (bj.getUTCDay() === 0) prefixes.push("weekly");
-  if (bj.getUTCDate() === 1) prefixes.push("monthly");
+  if (beijingWeekday(today) === "星期日") prefixes.push("weekly");
+  if (today.endsWith("-01")) prefixes.push("monthly");
   for (const file of filesError ? [dump] : [dump, files]) {
     const size = (await stat(file)).size;
     const sha = await fileSha256(file);

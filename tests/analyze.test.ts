@@ -12,6 +12,8 @@ import { analyzeArticle, buildMaterial, loadAnalyzeInput, normalizeStructure, St
 import { queueProcessing } from "@aihot/backend/jobs/content";
 import { QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { compactAnswerFirstSummary, enforceIdentity, MAX_BODY_CHARS, parseTranslateOutput } from "@aihot/backend/editorial/writing";
+import { READER_WORDING } from "@aihot/industry/wording";
+import { ITEM_TYPES } from "@aihot/industry/taxonomy";
 
 const T = tag();
 const SOURCE = `test-analyze-${T}`;
@@ -19,7 +21,7 @@ const X_SOURCE = `test-analyze-x-${T}`;
 
 interface Req { step: AnalysisStep; marker: string; user: string }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文"];
+const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
 // The scores sit a few points around the pack's T1 threshold and understand floor, so each case means
 // the same after a site recalibrates them: selected when the score reaches T1, written like a selected
 // item when it is above FLOOR, translated otherwise.
@@ -27,8 +29,10 @@ const T1 = tierThreshold("T1")!;
 const FLOOR = UNDERSTAND_FLOOR;
 const scoreAnswers: Record<string, number> = {
   CLEAR: T1 + 3, RESCUE: FLOOR + 1, LOW: FLOOR - 1, THIN: T1, SENSITIVE: T1, 推文: FLOOR,
-  BARE: FLOOR - 2, VAGUE: T1 + 2,
+  BARE: FLOOR - 2, VAGUE: T1 + 2, WORDY: T1, REFUSAL: T1, RENUMBER: T1, UNMENDED: T1,
 };
+
+const WORDY = ["WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
 
 // One stub stands in for DashScope (prefilter, structure), Zhipu (score, understand) and DeepSeek (summarize).
 const provider = await stub((_hit, req) => {
@@ -41,6 +45,15 @@ const provider = await stub((_hit, req) => {
   const answer = (content: unknown) => ({ id: `stub-${requests.length}`, model: "stub", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
   if (step === "prefilter") return answer({ label: marker === "OFFTOPIC" || marker === "BARE" ? "BLOCK" : marker === "VAGUE" ? "UNKNOWN" : "PASS", reason: "测试" });
   if (step === "score") return answer({ attentionScore: scoreAnswers[marker] });
+  // Copy with a word a site keeps from readers (added to the pack's list below), and its mended form: whole (WORDY),
+  // refused by the provider, with a number changed, or with as many such words as before.
+  if (step === "understand" && WORDY.includes(marker)) return answer({ itemType: ITEM_TYPES[0], authorRole: "principal", tags: [], editorialJudgment: `理由里有禁用词 ${marker}`, titleZh: `标题里有禁用词 ${marker}`, summaryZh: `${marker} 的摘要。第二句补充 3 个数字。` });
+  // A refusal in a provider's own words: each provider words its own, and the same request would meet it again.
+  if (step === "wording" && marker === "REFUSAL") return new Reply(400, { error: { message: "request refused", type: "invalid_request_error" } });
+  if (step === "wording") {
+    const unmended = marker === "UNMENDED" ? "有禁用词" : "换了说法";
+    return answer({ titleZh: `标题里${unmended} ${marker}`, summaryZh: `${marker} 的摘要。第二句补充 ${marker === "RENUMBER" ? 4 : 3} 个数字。`, reasonZh: `理由里${unmended} ${marker}` });
+  }
   if (step === "understand") {
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
     return answer({ itemType: "vendor_advisory", authorRole: "principal", tags: ["漏洞通告", "RCE", "免认证", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
@@ -89,6 +102,40 @@ test("a selected item: prefilter, the score, the content understanding and the s
   assert.equal(r.output.fact.evidence, "a lab released a model");
   const score = requests.find((q) => q.marker === "CLEAR" && q.step === "score")!;
   assert.match(score.user, /【标题】\nCLEAR model release/, "the score reads the original title, before any writing");
+});
+
+test("a word the site keeps from readers goes back once to be changed; copy without one is not sent", async () => {
+  // A word only this test bans: the pack's list is the site's own (empty in the template).
+  (READER_WORDING as Array<readonly [RegExp, string]>).push([/禁用词/u, "换一个说法"]);
+  try {
+    const id = await article("WORDY");
+    await analyzeArticle(id);
+    assert.equal(calls("WORDY").filter((s) => s === "wording").length, 1);
+    const r = await row(id);
+    assert.deepEqual([r.title_zh, r.reason_zh], ["标题里换了说法 WORDY", "理由里换了说法 WORDY"], "the mended copy is stored");
+    const sent = requests.find((q) => q.marker === "WORDY" && q.step === "wording")!;
+    assert.ok(sent.user.includes("标题用了“禁用词”") && sent.user.includes("推荐理由用了“禁用词”"), "each use named");
+    assert.ok(!requests.some((q) => q.step === "wording" && q.marker !== "WORDY"), "the other items' copy uses none");
+  } finally {
+    (READER_WORDING as Array<readonly [RegExp, string]>).pop();
+  }
+});
+
+test("the first copy stands when the provider refuses the mend, the mend changes a number or leaves as many such words", async () => {
+  (READER_WORDING as Array<readonly [RegExp, string]>).push([/禁用词/u, "换一个说法"]);
+  try {
+    for (const marker of ["REFUSAL", "RENUMBER", "UNMENDED"]) {
+      const id = await article(marker);
+      await analyzeArticle(id);
+      const r = await row(id);
+      assert.deepEqual([r.title_zh, r.reason_zh], [`标题里有禁用词 ${marker}`, `理由里有禁用词 ${marker}`], `${marker}: the first copy is stored`);
+      assert.equal(calls(marker).filter((s) => s === "wording").length, 1, `${marker}: mended once`);
+      const [receipt] = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE purpose = 'mend_wording' AND subject LIKE ${`article:${id}@%`}`;
+      assert.equal(receipt!.status, marker === "REFUSAL" ? "failed" : "completed", `${marker}: the mend's receipt`);
+    }
+  } finally {
+    (READER_WORDING as Array<readonly [RegExp, string]>).pop();
+  }
 });
 
 test("structure retains grounded conditions, rejects invented or unseen quotes, and does not infer missing scope", async () => {
@@ -144,10 +191,10 @@ test("the prefilter's BLOCK stops everything; UNKNOWN with material goes on like
   const vague = await analyzeArticle(vagueId);
   assert.deepEqual([vague!.output!.relevance, vague!.output!.selected, vague!.output!.titleZh], ["pass", true, "理解标题 VAGUE"]);
   assert.equal((await row(vagueId)).output.prefilter.label, "UNKNOWN", "the prefilter's own answer stays on record");
-  // Nothing but a title and no page to fetch: the BLOCK counts as UNKNOWN and waits for material.
+  // Nothing but a title and no page to fetch: it waits for material without a model call.
   const bare = await analyzeArticle(await article("BARE", { bodyText: null, excerpt: null, bodyStatus: "none" }));
   assert.deepEqual([bare!.output!.relevance, bare!.output!.selected, bare!.output!.score], ["unknown", false, null]);
-  assert.deepEqual(calls("BARE"), ["prefilter"]);
+  assert.deepEqual(calls("BARE"), []);
 });
 
 test("a feed summary alone: the article page is fetched first, then the whole article is judged", async () => {
@@ -191,6 +238,13 @@ test("guards: a company the input does not name is not written in; long summarie
   assert.equal(enforceIdentity(microsoft, { titleZh: "微软修复 Windows 漏洞", summaryZh: "微软发布了补丁修复该漏洞。" }).identityGuard.outcome, "pass");
   const long = "第一句交代了谁做了什么以及关键结果，这一句本身已经足够说明核心事件的来龙去脉。".repeat(3) + "第二句补充数字。".repeat(20);
   assert.ok(compactAnswerFirstSummary(long).length <= 190);
+  // A short first sentence and a long second one: the card once ended "…可连接 Google Ads 和 Meta 账号在 Google。".
+  const lovable = "Lovable 推出增长工具，在原有建应用聊天窗口中提供增长计划、广告投放和 SEO 能力。用户设定目标后，Lovable 依据应用上下文生成可执行计划；可连接 Google Ads 和 Meta 账号在 Google、YouTube、Facebook、Instagram 投放广告，广告上线前需用户审批，计费直接走 Google Ads 和 Meta 账号，Lovable 不加收服务费；SEO 方面覆盖索引基础、内置 Semrush 关键词机会分析和站外社区推广建议。功能现已在 Free、Pro 和 Business 计划可用。";
+  assert.equal(compactAnswerFirstSummary(lovable), "Lovable 推出增长工具，在原有建应用聊天窗口中提供增长计划、广告投放和 SEO 能力。", "whole sentences, never half of one");
+  // Only a first sentence longer than the limit is cut, at a clause, never inside an enumeration.
+  const runOn = "某实验室发布新模型，支持" + "甲乙丙、".repeat(39) + "甲乙丙，" + "补充说明".repeat(20) + "。";
+  const head = compactAnswerFirstSummary(runOn).slice(0, -1);
+  assert.ok(runOn.startsWith(head) && "，；".includes(runOn[head.length]!), head);
   assert.deepEqual(parseTranslateOutput("title_zh: 标题\nsummary_zh: 第一句。\n第二句。"), { titleZh: "标题", summaryZh: "第一句。\n第二句。", bodyZh: "" });
   assert.equal(parseTranslateOutput("title_zh: 标题\nbody_zh: 我们懂你。\n\n来源：X：PixVerse (@PixVerse)").bodyZh, "我们懂你。", "a repeated prompt line is dropped");
 });

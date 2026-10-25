@@ -4,17 +4,17 @@
 import { HOT_FACE_LIMIT, type HotParticipant, type HotStripEntry } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
 import { storedHotRanking, tierRank, type HotEntry, type HotRanking } from "../events/hot.ts";
-import { cached, cachedByKey, SHARED_ONLY } from "../lib/cache.ts";
+import { shared } from "../lib/cache.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { publicSourceName } from "./rules.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
 import { storyTexts } from "./story-text.ts";
 
 // Concurrent reads are shared, nothing more: public words follow withdrawals and regrouping at once.
-const ranking = cached(queryLatestHotRanking, SHARED_ONLY);
+const ranking = shared<void, HotRanking | null>(() => "latest", queryLatestHotRanking);
 
 export function latestHotRanking(): Promise<HotRanking | null> {
-  return ranking.get();
+  return ranking();
 }
 
 /** Search links follow the same current public evidence as every hot-ranking surface. */
@@ -56,7 +56,7 @@ interface Extras {
   texts: Map<number, { summary: string | null; latest: string | null }>;
 }
 
-const readExtras = cachedByKey((ranking: HotRanking) => String(ranking.id), queryExtras, { ...SHARED_ONLY, maxKeys: 4 });
+const readExtras = shared((ranking: HotRanking) => String(ranking.id), queryExtras);
 
 async function queryExtras(ranking: HotRanking): Promise<Extras> {
   const ids = ranking.entries.map((e) => e.storyId);

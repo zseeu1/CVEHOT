@@ -20,11 +20,13 @@ async function fixture(name: string, mode = "editorial", relevance = "pass") {
   const source = `outlet-${tag()}`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at)
     VALUES (${source}, ${name}, 'rss', 'T1', ${mode}, '2100-01-01')`;
+  // Found, published and released a minute ago: a rolling window that ends at the reader's clock holds it.
+  const minuteAgo = new Date(Date.now() - 60_000);
   const { articleId: id } = await upsertMaterial({ sourceId: source, url: `https://example.org/${source}`,
-    title: "Source article", bodyText: "Confirmed material", bodyStatus: "ok", publishedAt: new Date(), via: "fetch" });
+    title: "Source article", bodyText: "Confirmed material", bodyStatus: "ok", publishedAt: minuteAgo, discoveredAt: minuteAgo, via: "fetch" });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, title_zh, summary_zh, category, selected, score)
-    VALUES (${id}, 1, 'rule', ${relevance}, '对外标题', '对外摘要', 'advisory', true, 90)`;
-  await publishArticle(id, { releasedAt: new Date(Date.now() - 60_000) });
+VALUES (${id}, 1, 'rule', ${relevance}, '对外标题', '对外摘要', 'advisory', true, 90)`;
+  await publishArticle(id, { releasedAt: minuteAgo });
   return id;
 }
 

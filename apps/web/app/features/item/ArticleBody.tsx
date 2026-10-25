@@ -3,6 +3,7 @@
 // and pictures that are not links open in the viewer, stepping through the body's pictures.
 import { useEffect, useRef, useState } from "react";
 import { Lightbox, type LightboxImage } from "../../components/ui/Lightbox";
+import { copyText } from "../../lib/clipboard";
 
 /** Pictures worth enlarging: not inside a link, not tiny icons. */
 function canZoom(img: HTMLImageElement): boolean {
@@ -60,7 +61,7 @@ function enhanceCode(root: HTMLElement): () => void {
     button.addEventListener("click", async () => {
       let ok = true;
       try {
-        await navigator.clipboard.writeText(source);
+        await copyText(source);
       } catch {
         ok = false;
       }

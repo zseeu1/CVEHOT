@@ -14,8 +14,8 @@
     "@aihot/contracts": "*",
     "@aihot/industry": "*",
     "@aihot/site": "*",
-    "@modelcontextprotocol/server": "2.1.0",
-    "fastify": "5.12.5",
+    "@modelcontextprotocol/server": "2.3.0",
+    "fastify": "5.12.7",
     "zod": "4.6.5"
   }
 }

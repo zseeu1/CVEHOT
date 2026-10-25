@@ -1,5 +1,15 @@
+import { decodeHTMLStrict } from "entities/decode";
+
 export function collapseWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+/** A declared language wins; otherwise Han text is Chinese only without Japanese or Korean script. */
+export function isChineseText(text: string, language?: string | null): boolean {
+  const declared = language?.toLowerCase().split(/[-_]/)[0];
+  if (declared === "zh") return true;
+  if (declared && !["und", "unknown", "other", "zxx"].includes(declared)) return false;
+  return /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
 }
 
 export function truncate(s: string, max: number, ellipsis = "…"): string {
@@ -9,9 +19,9 @@ export function truncate(s: string, max: number, ellipsis = "…"): string {
 }
 
 /**
- * Removes element markup while keeping `>` inside quoted attribute values.
- * A VGC link title such as `title="Platforms > Xbox"` used to be split at that
- * character by the old regular expression, leaking the rest of the tag into text.
+ * Removes element markup while keeping `>` inside quoted attribute values: a link
+ * title such as `title="Platforms > Xbox"` must not end the tag there and leak the
+ * rest of it into the text.
  * This follows the small part of the HTML tokenizer needed here: an equals sign
  * starts a quoted value only after an attribute name. Comments, doctypes and
  * `< a>` keep the old first-`>` behavior because they are not element tags here.
@@ -77,20 +87,18 @@ export function stripTagMarkup(html: string, replacement = " "): string {
   return out;
 }
 
+/**
+ * Character references, numeric and named, as browsers read them in text; only those ending in a semicolon,
+ * so an address keeps its "&copy=". Feeds escape text twice ("AI&amp;#8217;s", code shown as "&amp;lt;"),
+ * and the text they mean is what readers expect, so "&amp;" goes first.
+ */
+export function decodeEntities(s: string): string {
+  return decodeHTMLStrict(s.replace(/&amp;/g, "&"));
+}
+
+/** The text of HTML: without scripts and styles, every tag a word boundary, references decoded, whitespace collapsed. */
 export function stripTags(html: string): string {
-  const text = html
-    .replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|h[1-6]|blockquote|pre|tr)>/gi, "\n");
-  return collapseWhitespace(
-    stripTagMarkup(text)
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;|&apos;/g, "'"),
-  );
+  return collapseWhitespace(decodeEntities(stripTagMarkup(html.replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, " "))));
 }
 
 export function escapeXml(s: string): string {

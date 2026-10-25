@@ -1,7 +1,9 @@
 // Collection run for one source: fetch listing → filter → store material → enqueue processing.
 // A failed fetch never advances the success cursor; the source's health reflects consecutive failures.
 import { sql, type Db } from "../db.ts";
-import { identityKeyFor, STALE_ON_DISCOVERY_MS, upsertMaterial } from "../content/materials.ts";
+import { fillScheduledPublications, identityKeyFor, reuseExternalMaterialIdentities, STALE_ON_DISCOVERY_MS, upsertMaterial } from "../content/materials.ts";
+import { PresentationMismatch } from "../content/presentation.ts";
+import { HttpStatusError } from "../lib/http-fetch.ts";
 import { identityKeyForUrl } from "../lib/url.ts";
 import { sha256 } from "../lib/ids.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
@@ -10,7 +12,7 @@ import { BudgetExceededError, completeReceipt } from "../providers/receipts.ts";
 import { fetchRss } from "./rss.ts";
 import { fetchDetail, fetchWebList, isCallToActionTitle, needsTitle, type DetailNeed } from "./web-list.ts";
 import { unsupportedConfig } from "./config-keys.ts";
-import { admitListing } from "./filters.ts";
+import { admitListing, filterPublicationWindow } from "./filters.ts";
 import { fetchJsonList } from "./json-list.ts";
 import { fetchXSearch, planXShards, readXSearch, shardHandle, shardQuery, selfThreadHandle, SHARDABLE_SQL, tweetToCandidate, type XBacklog } from "./x.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
@@ -24,26 +26,29 @@ export interface CollectResult {
   error?: string;
 }
 
-async function loadSource(id: string): Promise<SourceRow | null> {
+export async function loadSource(id: string): Promise<SourceRow | null> {
   const [s] = await sql<SourceRow[]>`
     SELECT id, name, kind, config, tier, participation_mode, first_party, interval_minutes, enabled, cursor, fail_count
     FROM sources WHERE id = ${id}`;
   return s ?? null;
 }
 
-interface StoredDetail {
+export interface StoredDetail {
   identity_key: string;
+  source_id: string;
   title: string;
   published_at: Date | null;
+  publication_time?: string | null;
   excerpt: string | null;
   body_status: string;
   rules: string | null;
 }
 
-async function storedDetails(identities: string[]): Promise<Map<string, StoredDetail>> {
+/** What material under these identities already has, whichever source stored it. */
+export async function storedDetails(identities: string[]): Promise<Map<string, StoredDetail>> {
   if (identities.length === 0) return new Map();
   // One array parameter: a long listing would exceed the query's parameter limit.
-  const rows = await sql<StoredDetail[]>`SELECT identity_key, title, published_at, excerpt, body_status,
+  const rows = await sql<StoredDetail[]>`SELECT identity_key, source_id, title, published_at, publication_time, excerpt, body_status,
     raw->'collectionDetail'->>'rules' AS rules
     FROM articles WHERE identity_key = ANY(${identities}::text[])`;
   return new Map(rows.map((r) => [r.identity_key, r]));
@@ -51,14 +56,185 @@ async function storedDetails(identities: string[]): Promise<Map<string, StoredDe
 
 const DAY_MS = 86_400_000;
 
-type CollectionCandidate = Candidate & { detailRules?: string };
+export type CollectionCandidate = Candidate & { detailRules?: string };
 
-async function store(sourceId: string, candidates: CollectionCandidate[], backfill: string | null): Promise<{ created: number; revised: number }> {
+/** The detail rules in force; a page read under other rules is read again. */
+const detailRulesOf = (source: SourceRow) => (source.config.detail ? sha256(JSON.stringify(source.config.detail)) : null);
+
+/**
+ * A listing as every run reads it: the source's URL, category and noise rules, its order, and one entry
+ * per stored identity. Deduplication comes before detail reads and limits: URL aliases must neither buy
+ * duplicate reads nor crowd other articles out of the window. The identity is exactly the one the
+ * material will store; a source whose entries are sections of one page (#september-24-2026 …) keeps
+ * their fragments in it. Listing dates marked unreliable give way to the detail page's rule.
+ */
+export async function listingEntries(source: SourceRow, found: Candidate[]): Promise<CollectionCandidate[]> {
+  let candidates = admitListing(found, source);
+  if (source.kind === "json_list" && source.config.externalIdPath) candidates = await reuseExternalMaterialIdentities(source.id, candidates);
+  if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+  const unreliableDates = source.config.detail?.publishedAtAuthoritative === true;
+  const unique = new Map<string, CollectionCandidate>();
+  for (const c of candidates) {
+    const identityKey = c.identityKey
+      ?? (source.config.preserveUrlFragment === true ? identityKeyForUrl(c.url, { keepFragment: true }) : null)
+      ?? identityKeyFor({ ...c, sourceId: source.id, via: "fetch" });
+    if (!unique.has(identityKey)) unique.set(identityKey, { ...c, identityKey, ...(unreliableDates ? { publishedAt: null, publicationTime: null } : {}) });
+  }
+  return [...unique.values()];
+}
+
+/**
+ * Which entries a run stores. A first import takes the configured months of archive (and a bounded
+ * number, applied by the caller). Later runs take new identities only when published since the source
+ * was added, less the stale-on-discovery window, so a long listing's archive comes in through the first
+ * import alone; stored identities still accept corrections. An X search is bounded by its watermark
+ * instead. A fixed publication boundary applies on every run. `byListing` judges the listing's dates
+ * and passes an undated entry; `admits` judges again after detail pages may have dated it.
+ */
+function admission(source: SourceRow, known: Map<string, StoredDetail>, firstImport: boolean) {
+  const months = Number(source.config._aihot?.initialBackfillMonths ?? 12);
+  const floor = firstImport ? Date.now() - months * 30 * DAY_MS
+    : source.kind === "x_search" ? null : Date.parse(String(source.cursor!.initializedAt)) - STALE_ON_DISCOVERY_MS;
+  const byListing = (c: Candidate) => floor === null || !firstImport && known.has(c.identityKey!) || !(c.publishedAt && c.publishedAt.getTime() < floor);
+  return { byListing, admits: (c: Candidate) => byListing(c) && filterPublicationWindow([c], source.config.publishedAfter).length > 0 };
+}
+
+/** Entries detail pages dated out of admission, by identity: the listing date read with, and the page's date. */
+type DatedOut = Record<string, [listed: string | null, found: string | null]>;
+
+export interface DetailReads {
+  attempts: number;
+  /** Last attempted identity: the next run starts after it, even when it failed. */
+  after?: string;
+  /** Entries whose page is still to be read: over the budget, after a spent provider budget, or failed. */
+  pending: number;
+  failures: Array<{ url: string; error: string }>;
+  /** The listing date of each entry a page dated under the rules in force, this run or remembered. */
+  listed: Map<string, string | null>;
+}
+
+/**
+ * This source's stored material lends a listing entry its date where the listing has none (unless an
+ * authoritative rule reads it again) and its detail-page title, which the listing's own rendering must
+ * not revise back. Returns whether its page was read under the rules in force.
+ */
+function fromStored(c: CollectionCandidate, stored: StoredDetail, source: SourceRow, rules: string | null): boolean {
+  const d = source.config.detail;
+  if (d?.titleSelector || d?.titleRegex) c.title = stored.title;
+  const current = stored.rules === rules;
+  if ((current || d?.publishedAtAuthoritative !== true) && !c.publishedAt) {
+    c.publishedAt = stored.published_at;
+    c.publicationTime = stored.publication_time ?? null;
+  }
+  return current;
+}
+
+/** What a detail page should add to an entry, or null when it would add nothing. */
+function detailNeed(c: CollectionCandidate, stored: StoredDetail | undefined, source: SourceRow, listingTitle: string): DetailNeed | null {
+  const d = source.config.detail!;
+  const storedHeadline = !!stored && isCallToActionTitle(listingTitle) && !isCallToActionTitle(stored.title);
+  const need: DetailNeed = {
+    date: d.publishedAtAuthoritative === true || !(stored?.published_at || c.publishedAt) || d.upgradeDatePrecision === true,
+    title: !!(d.titleSelector || d.titleRegex) && (d.titleAuthoritative === true || (!storedHeadline && needsTitle(c.title))),
+    summary: !!d.summarySelector && !(stored?.excerpt || c.excerpt),
+    body: source.participation_mode === "editorial" && stored?.body_status !== "ok" && !c.bodyText && (!c.bodyStatus || c.bodyStatus === "pending"),
+  };
+  return need.date || need.title || need.summary ? need : null;
+}
+
+/** A detail page's findings. A body comes from the same Readability path as extraction, using bytes already fetched. */
+function applyDetail(c: CollectionCandidate, got: Awaited<ReturnType<typeof fetchDetail>>, rules: string): void {
+  c.detailRules = rules;
+  if (got.title) c.title = got.title;
+  if (got.summary) c.excerpt = got.summary;
+  // A confirmed body enters through normal material revisions and skips the redundant fetch job.
+  if (got.body) {
+    c.bodyHtml = got.body.html;
+    c.bodyText = got.body.text;
+    c.bodyStatus = "ok";
+    if (!c.media?.length) c.media = got.body.images;
+  }
+  // The page's date (its source's rule first, fetchDetail); a date-only listing value gives way to its time on the same day.
+  if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) {
+    c.publishedAt = got.publishedAt;
+    c.publicationTime = got.publicationTime;
+  }
+}
+
+/**
+ * Detail pages (config.detail) fill what a listing lacks, reading at most `budget` pages; material
+ * stored before that budget ran out, or during a failed read, finishes on a later run. A page read
+ * under the rules in force is not read again, and another source's material takes nothing from this
+ * listing (materials.ts): its page is not worth a read. An entry its page dated out of admission is
+ * remembered (`datedOut`): while listed with the same date and still not admitted, it keeps that date
+ * unread, so the same page is not bought on every run and an archive does not use up the budget. A
+ * spent provider budget defers the remaining pages; other failures are reported, not thrown, and a page
+ * the site refuses is not read again under the same rules. Each run continues after the last attempted
+ * identity, so a recoverable failure cannot keep taking the budget from all later entries.
+ */
+export async function enrichDetails(candidates: CollectionCandidate[], source: SourceRow, known: Map<string, StoredDetail>,
+  opts: { budget: number; after?: string; datedOut: DatedOut; admits: (c: Candidate) => boolean }): Promise<DetailReads> {
+  const rules = detailRulesOf(source);
+  const reads: DetailReads = { attempts: 0, pending: 0, failures: [], listed: new Map() };
+  let providerBudgetSpent = false;
+  const start = candidates.findIndex(c => c.identityKey === opts.after) + 1;
+  const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
+  for (const c of ordered) {
+    const stored = known.get(c.identityKey!);
+    if (stored && stored.source_id !== source.id) continue;
+    const listingTitle = c.title;
+    if (stored && fromStored(c, stored, source, rules)) continue;
+    const need = rules === null ? null : detailNeed(c, stored, source, listingTitle);
+    if (!need) continue;
+    const listed = c.publishedAt?.toISOString() ?? null;
+    const seen = opts.datedOut[c.identityKey!];
+    const remembered = seen?.[1] ? new Date(seen[1]) : null;
+    if (seen && seen[0] === listed && !opts.admits({ ...c, publishedAt: remembered })) {
+      c.publishedAt = remembered;
+      reads.listed.set(c.identityKey!, listed);
+    } else if (providerBudgetSpent || reads.attempts >= opts.budget) {
+      reads.pending += 1;
+    } else {
+      reads.attempts += 1;
+      reads.after = c.identityKey;
+      try {
+        applyDetail(c, await fetchDetail(c.url, source, need), rules!);
+        reads.listed.set(c.identityKey!, listed);
+      } catch (error) {
+        if (shutdownSignal.signal.aborted) throw error;
+        // A spent provider budget is not the source's failure.
+        if (error instanceof BudgetExceededError) providerBudgetSpent = true;
+        else reads.failures.push({ url: c.url, error: String(error instanceof Error ? error.message : error).slice(0, 300) });
+        // A page the site refuses (paywall, captcha, blocked address) is read under these rules once, like
+        // a page without the fields: read again on every run it took the budget from the entries behind
+        // it. A missing page, a timeout, rate limiting and server errors have recovered, so they are retried.
+        if (error instanceof HttpStatusError && error.status < 500 && ![404, 408, 425, 429].includes(error.status)) {
+          c.detailRules = rules!;
+          reads.listed.set(c.identityKey!, listed);
+        } else reads.pending += 1;
+      }
+    }
+  }
+  return reads;
+}
+
+async function store(sourceId: string, runId: number, candidates: CollectionCandidate[], backfill: string | null) {
   let created = 0;
   let revised = 0;
   for (const c of candidates) {
     const material = { ...c, sourceId, via: "fetch" as const, backfill };
-    const res = await upsertMaterial(material);
+    let res;
+    try { res = await upsertMaterial(material); }
+    catch (error) {
+      if (!(error instanceof PresentationMismatch)) throw error;
+      // This article's transaction retained the consistent original and translation. Keep its
+      // actionable failure on the fetch run, without withholding later articles in this listing.
+      await sql`UPDATE fetch_runs SET detail = coalesce(detail,'{}'::jsonb) || jsonb_build_object('presentationFailures',
+        coalesce(detail->'presentationFailures','[]'::jsonb) ||
+          ${sql.json([{ identityKey: identityKeyFor(material), url: c.url, error: error.message }])}::jsonb)
+        WHERE id=${runId}`;
+      continue;
+    }
     // A successful page with no matching field is complete too. Otherwise an undated article at
     // the front of a listing would consume the detail budget forever and strand the remaining ones.
     if (c.detailRules) await sql`UPDATE articles SET raw = jsonb_set(
@@ -85,7 +261,8 @@ async function recordFetch(db: Db, sourceId: string, runId: number, run: { found
         health = 'ok', cursor = ${db.json(run.cursor as never)}, updated_at = now(),
         next_fetch_at = now() + make_interval(mins => interval_minutes)
       WHERE id = ${sourceId}`;
-    await db`UPDATE fetch_runs SET status = 'ok', finished_at = now(), found_count = ${run.found}, new_count = ${run.created}, detail = ${detail} WHERE id = ${runId}`;
+    await db`UPDATE fetch_runs SET status = 'ok', finished_at = now(), found_count = ${run.found}, new_count = ${run.created},
+      detail = nullif(coalesce(detail,'{}'::jsonb) || coalesce(${detail}::jsonb,'{}'::jsonb),'{}'::jsonb) WHERE id = ${runId}`;
     return;
   }
   await db`
@@ -97,10 +274,11 @@ async function recordFetch(db: Db, sourceId: string, runId: number, run: { found
       updated_at = now()
     WHERE id = ${sourceId}`;
   await db`UPDATE fetch_runs SET status = 'failed', finished_at = now(), found_count = ${run.found}, new_count = ${run.created},
-              error = ${run.error}, detail = ${detail} WHERE id = ${runId}`;
+              error = ${run.error}, detail = nullif(coalesce(detail,'{}'::jsonb) || coalesce(${detail}::jsonb,'{}'::jsonb),'{}'::jsonb) WHERE id = ${runId}`;
 }
 
-export async function collectSource(sourceId: string, opts: { force?: boolean } = {}): Promise<CollectResult> {
+/** `xSince` reads an X account again from that post, without moving its watermark back. */
+export async function collectSource(sourceId: string, opts: { force?: boolean; xSince?: string } = {}): Promise<CollectResult> {
   const source = await loadSource(sourceId);
   if (!source) return { sourceId, status: "skipped", found: 0, created: 0, revised: 0, error: "missing" };
   if (!source.enabled && !opts.force) return { sourceId, status: "skipped", found: 0, created: 0, revised: 0, error: "paused" };
@@ -123,10 +301,10 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     let nextCursor: Record<string, unknown> = { ...(source.cursor ?? {}) };
     let detail: Record<string, unknown> | null = null;
     const d = source.config.detail;
-    const detailRules = d ? sha256(JSON.stringify(d)) : null;
+    const rules = detailRulesOf(source);
     if (source.kind === "rss") {
       // Changed detail rules require the listing again even when its bytes did not change.
-      const rss = await fetchRss(source, { force: opts.force || !!detailRules && source.cursor?.detailRules !== detailRules });
+      const rss = await fetchRss(source, { force: opts.force || !!rules && source.cursor?.detailRules !== rules });
       candidates = rss.candidates;
       // The first import keeps only part of the listing: the next run reads all of it once before
       // accepting 304s, for the recent entries the import left out. Persist validators only after store succeeds.
@@ -137,109 +315,53 @@ export async function collectSource(sourceId: string, opts: { force?: boolean } 
     else if (source.kind === "web_list") candidates = await fetchWebList(source);
     else if (source.kind === "json_list") candidates = await fetchJsonList(source);
     else {
-      const x = await fetchXSearch(source);
+      const x = await fetchXSearch(source, opts.xSince);
       candidates = x.candidates;
       paidReceiptIds = x.receiptIds;
-      if (x.lastId) nextCursor.lastTweetId = x.lastId;
+      if (x.lastId && !(nextCursor.lastTweetId && BigInt(String(nextCursor.lastTweetId)) > BigInt(x.lastId))) nextCursor.lastTweetId = x.lastId;
       // A search longer than one run keeps its position for the next runs (shown in the admin).
       if (x.backlog.length) nextCursor.xBacklog = x.backlog;
       else delete nextCursor.xBacklog;
       detail = { pages: x.pages, truncated: x.truncated, backlog: x.backlog.length, backlogPages: x.backlogPages, dropped: x.dropped };
     }
     found = candidates.length;
-    candidates = admitListing(candidates, source);
-    if (source.config.sortByPublishedAt) candidates.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
-    // Deduplicate before enrichment and limits: URL aliases must neither buy duplicate detail reads
-    // nor crowd other articles out of the window. Use exactly the identity the material will store; a
-    // source whose entries are sections of one page (#september-24-2026 …) keeps their fragments in it.
-    const unique = new Map<string, Candidate>();
-    for (const c of candidates) {
-      const identityKey = c.identityKey
-        ?? (source.config.preserveUrlFragment === true ? identityKeyForUrl(c.url, { keepFragment: true }) : null)
-        ?? identityKeyFor({ ...c, sourceId, via: "fetch" });
-      if (!unique.has(identityKey)) unique.set(identityKey, { ...c, identityKey });
-    }
-    candidates = [...unique.values()];
-    // Listing dates marked unreliable are dropped before archive admission; the detail page's rule decides.
-    if (d?.publishedAtAuthoritative === true) for (const c of candidates) c.publishedAt = null;
+    candidates = await listingEntries(source, candidates);
     // Admission of old archive entries and detail recovery both need the same stored identities.
     // A later date correction must still reach material that was already admitted without a date.
     const known = d || (!firstImport && source.kind !== "x_search")
       ? await storedDetails(candidates.map((c) => c.identityKey!)) : new Map<string, StoredDetail>();
+    const { byListing, admits } = admission(source, known, firstImport);
+    candidates = candidates.filter(byListing);
     // First import of a new source: bounded, and archived by source time (never "today", never pushed).
-    const backfillLimit = Number(source.config._aihot?.initialBackfillLimit ?? 30);
-    const backfillMonths = Number(source.config._aihot?.initialBackfillMonths ?? 12);
-    if (firstImport) {
-      const cutoff = Date.now() - backfillMonths * 30 * 86400000;
-      candidates = candidates.filter((c) => !c.publishedAt || !Number.isFinite(c.publishedAt.getTime()) || c.publishedAt.getTime() >= cutoff).slice(0, backfillLimit);
-    } else if (source.kind !== "x_search") {
-      // Later runs admit new identities only when published since the source was added, less the stale-on-discovery
-      // window: a long listing's archive comes in through the bounded first import alone. Existing identities
-      // still accept corrections. The listing's date decides; an undated entry passes and waits for a date as material (dropping one a detail page
-      // dates would buy the same read again on every run). An X search is bounded by its watermark. Nothing
-      // is cut by count: the cursor (an RSS validator) moves past the whole listing, so a recent entry cut
-      // here would never be offered again.
-      const floor = Date.parse(String(source.cursor!.initializedAt)) - STALE_ON_DISCOVERY_MS;
-      candidates = candidates.filter((c) => known.has(c.identityKey!) || !(c.publishedAt && c.publishedAt.getTime() < floor));
-    }
-
-    // Detail pages fill missing fields within the per-run budget. Material stored before that budget
-    // ran out, or during a failed detail read, can finish on a later listing run.
-    const detailBudget = Number(d?.maxFetches ?? 0);
-    let detailUsed = 0;
-    let detailPending = 0;
-    let detailBudgetSpent = false;
-    const detailErrors: Array<{ url: string; error: string }> = [];
-    for (const c of candidates) {
-      const stored = known.get(c.identityKey!);
-      const storedHeadline = !!stored && isCallToActionTitle(c.title) && !isCallToActionTitle(stored.title);
-      if (stored !== undefined) {
-        // The title came from the detail page: the listing's own rendering must not revise it back.
-        if (d?.titleSelector || d?.titleRegex) c.title = stored.title;
-        if (stored.rules === detailRules) continue;
-      }
-      if (!d) continue;
-      const need: DetailNeed = {
-        date: !(stored?.published_at || c.publishedAt) || d.upgradeDatePrecision === true,
-        title: !!(d.titleSelector || d.titleRegex) && (d.titleAuthoritative === true || (!storedHeadline && needsTitle(c.title))),
-        summary: !!d.summarySelector && !(stored?.excerpt || c.excerpt),
-        body: source.participation_mode === "editorial" && stored?.body_status !== "ok" && !c.bodyText && (!c.bodyStatus || c.bodyStatus === "pending"),
-      };
-      if (!need.date && !need.title && !need.summary) continue;
-      if (detailBudgetSpent || detailUsed >= detailBudget) { detailPending += 1; continue; }
-      detailUsed += 1;
-      try {
-        const got = await fetchDetail(c.url, source, need);
-        c.detailRules = detailRules!;
-        if (got.title) c.title = got.title;
-        if (got.summary) c.excerpt = got.summary;
-        // The same Readability path as extraction, using bytes already fetched for the detail rules.
-        // A confirmed body enters through normal material revisions and skips the redundant fetch job.
-        if (got.body) {
-          c.bodyHtml = got.body.html;
-          c.bodyText = got.body.text;
-          c.bodyStatus = "ok";
-          if (!c.media?.length) c.media = got.body.images;
-          if (!d.publishedAtAuthoritative && !c.publishedAt && got.body.publishedAt) c.publishedAt = got.body.publishedAt;
-        }
-        // A date-only listing value gives way to the detail page's time on the same day.
-        if (got.publishedAt && (!c.publishedAt || Math.abs(got.publishedAt.getTime() - c.publishedAt.getTime()) < DAY_MS)) c.publishedAt = got.publishedAt;
-      } catch (error) {
-        if (shutdownSignal.signal.aborted) throw error;
-        detailPending += 1;
-        // A spent provider budget defers the remaining detail work; it is not a source failure.
-        if (error instanceof BudgetExceededError) { detailBudgetSpent = true; continue; }
-        detailErrors.push({ url: c.url, error: String(error instanceof Error ? error.message : error).slice(0, 300) });
-      }
-    }
+    if (firstImport) candidates = candidates.slice(0, Number(source.config._aihot?.initialBackfillLimit ?? 30));
+    const reads = await enrichDetails(candidates, source, known, {
+      budget: Number(d?.maxFetches ?? 0), admits,
+      after: source.cursor?.detailRules === rules ? source.cursor?.detailAfter : undefined,
+      datedOut: source.cursor?.detailRules === rules ? source.cursor?.detailDatedOut ?? {} : {},
+    });
     if (d) {
-      detail = { ...detail, detailAttempts: detailUsed, detailFailures: detailErrors.length, detailPending, detailErrors };
-      nextCursor.detailRules = detailRules;
+      detail = { ...detail, detailAttempts: reads.attempts, detailFailures: reads.failures.length, detailPending: reads.pending, detailErrors: reads.failures };
+      nextCursor.detailRules = rules;
+      if (reads.after) nextCursor.detailAfter = reads.after;
       // A validator covers the whole listing: accept 304 only after its detail work is complete.
-      if (source.kind === "rss" && detailPending > 0) delete nextCursor.rss;
-    } else delete nextCursor.detailRules;
+      if (source.kind === "rss" && reads.pending > 0) delete nextCursor.rss;
+    } else { delete nextCursor.detailRules; delete nextCursor.detailAfter; }
 
-    ({ created, revised } = await store(sourceId, candidates, firstImport ? "first-import" : null));
+    // Detail pages can establish a date the listing did not have, including an old archive date: such an
+    // entry is not stored, and the cursor remembers what its page said (enrichDetails).
+    const datedOut: DatedOut = {};
+    candidates = candidates.filter((c) => {
+      if (admits(c)) return true;
+      const listed = reads.listed.get(c.identityKey!);
+      if (listed !== undefined) datedOut[c.identityKey!] = [listed, c.publishedAt?.toISOString() ?? null];
+      return false;
+    });
+    // Kept while the listing offers them; a 304 offers no entries and keeps the last ones.
+    if (found) nextCursor.detailDatedOut = datedOut;
+    if (!d || !Object.keys(nextCursor.detailDatedOut ?? {}).length) delete nextCursor.detailDatedOut;
+    const stored = await store(sourceId, run!.id, candidates, firstImport ? "first-import" : null);
+    ({ created, revised } = stored);
+    for (const id of await fillScheduledPublications(sourceId)) await queueProcessing(id);
 
     if (firstImport) nextCursor.initializedAt = new Date().toISOString();
     nextCursor.lastOkAt = new Date().toISOString();
@@ -277,8 +399,9 @@ function coveredTo(m: SourceRow): bigint {
  * One search for a shard of X accounts (planXShards). Each post goes to the source whose handle wrote
  * it, and every account keeps its own fetch run, health and cursor. The oldest watermark bounds the
  * search, so no account misses a post (the others only see posts they already have again); afterwards
- * every account is covered up to the newest post the search saw, and the stretches still unread are
- * kept in each account's cursor, so they survive a change of shards.
+ * each account's watermark moves to its own newest post the search saw (another account's would hide
+ * its late posts and, read on its own, the posts below it), and the stretches still unread are kept in
+ * each account's cursor, so they survive a change of shards.
  */
 export async function collectXShard(key: string, sourceIds: string[]): Promise<{ key: string; status: "ok" | "failed" | "skipped"; accounts: number; found: number; created: number; error?: string }> {
   const members = (
@@ -304,24 +427,25 @@ export async function collectXShard(key: string, sourceIds: string[]): Promise<{
     }
     const read = await readXSearch(shardQuery(members.map((m) => shardHandle(m)!), members.map(selfThreadHandle).filter((h): h is string => h !== null)), { lastId: String(since), backlog, subject: `x-shard:${key}` });
     const detail = { shard: key, accounts: members.length, pages: read.pages, truncated: read.truncated, backlog: read.backlog.length, backlogPages: read.backlogPages, dropped: read.dropped };
-    const counts = new Map<string, { found: number; created: number }>();
+    const counts = new Map<string, { found: number; created: number; newest: string }>();
     for (const m of members) {
       const handle = shardHandle(m)!.toLowerCase();
       const mine = read.tweets.filter((t) => t.user.screen_name.toLowerCase() === handle);
-      const stored = await store(m.id, admitListing(mine.map(tweetToCandidate), m), null);
+      const stored = await store(m.id, runs.get(m.id)!, admitListing(mine.map(tweetToCandidate), m), null);
       found += mine.length;
       created += stored.created;
-      counts.set(m.id, { found: mine.length, created: stored.created });
+      const newest = mine.reduce((a, t) => (BigInt(t.id_str) > BigInt(a) ? t.id_str : a), String(m.cursor!.lastTweetId));
+      counts.set(m.id, { found: mine.length, created: stored.created, newest });
     }
     // Only a fully stored search advances coverage. A failed write can replay every paid page;
     // material already committed is idempotent, and no member is left half-finished.
     await sql.begin(async tx => {
       for (const m of members) {
-        const own = String(m.cursor!.lastTweetId);
-        const cursor: Record<string, unknown> = { ...m.cursor, lastTweetId: read.lastId && BigInt(read.lastId) > BigInt(own) ? read.lastId : own, lastOkAt: new Date().toISOString() };
+        const { newest, ...count } = counts.get(m.id)!;
+        const cursor: Record<string, unknown> = { ...m.cursor, lastTweetId: newest, lastOkAt: new Date().toISOString() };
         if (read.backlog.length) cursor.xBacklog = read.backlog;
         else delete cursor.xBacklog;
-        await recordFetch(tx, m.id, runs.get(m.id)!, { ...counts.get(m.id)!, detail, cursor });
+        await recordFetch(tx, m.id, runs.get(m.id)!, { ...count, detail, cursor });
       }
       for (const receiptId of read.receiptIds) await completeReceipt(tx, receiptId);
     });

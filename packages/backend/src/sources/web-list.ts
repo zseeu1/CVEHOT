@@ -1,50 +1,24 @@
 // Web list pages: HTML with selectors, Markdown through Jina Reader, and dated changelog sections.
 import * as cheerio from "cheerio";
-import { guardedFetch } from "../lib/http-fetch.ts";
+import { guardedFetch, languageHeaders, requireOk } from "../lib/http-fetch.ts";
+import { contentDocument } from "../lib/page-content.ts";
 import { fetchListing } from "./listing-fetch.ts";
 import { identityKeyForUrl, normalizeUrl } from "../lib/url.ts";
 import { collapseWhitespace, stripTags } from "../lib/text.ts";
-import { readable, type ExtractedBody } from "../content/extract.ts";
+import { isSignInUrl, pagePublicationDate, pageRules, readableDocument, type ExtractedBody } from "../content/extract.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
-import { jinaRead } from "../providers/jina.ts";
-import { articleUtcOffset, parseLooseDate } from "./dates.ts";
+import { JINA_PREFIX, jinaRead } from "../providers/jina.ts";
+import { articleUtcOffset, readPublicationDate, readRelativeDate, type PublicationDate } from "./dates.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
-const JINA_PREFIX = "https://r.jina.ai/";
 
 /** A date rule names one element; unrelated tooltips must not hide its visible publication date. */
-function elementDate(el: ReturnType<cheerio.CheerioAPI>, utcOffset?: string): Date | null {
+function elementDate(el: ReturnType<cheerio.CheerioAPI>, utcOffset?: string): PublicationDate {
   for (const value of [el.attr("datetime"), el.attr("content"), el.attr("title"), el.text()]) {
-    const date = parseLooseDate(value, utcOffset);
-    if (date) return date;
+    const date = readPublicationDate(value, utcOffset);
+    if (date.publishedAt) return date;
   }
-  return null;
-}
-
-/** The datePublished of the page's structured data (JSON-LD, also inside @graph or embedded app state). */
-export function jsonLdPublished($: cheerio.CheerioAPI, html: string): string | null {
-  const find = (v: unknown, depth = 0): string | null => {
-    if (depth > 6 || v === null || typeof v !== "object") return null;
-    if (Array.isArray(v)) {
-      for (const x of v) {
-        const got = find(x, depth + 1);
-        if (got) return got;
-      }
-      return null;
-    }
-    const o = v as Record<string, unknown>;
-    if (typeof o.datePublished === "string" && o.datePublished) return o.datePublished;
-    return find(o["@graph"], depth + 1);
-  };
-  for (const el of $('script[type="application/ld+json"]').toArray()) {
-    try {
-      const got = find(JSON.parse($(el).text()));
-      if (got) return got;
-    } catch {
-      // a broken block: the pattern below may still find it
-    }
-  }
-  return /"datePublished"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? null;
+  return readRelativeDate(el.text(), new Date(), utcOffset);
 }
 
 /** Prefix rules ignore the scheme: a Jina listing of an http:// address links its posts over http. */
@@ -73,11 +47,11 @@ function listingItself(url: string, listing: string): boolean {
 }
 
 /**
- * Navigation a listing links to but that is no post: the listing itself, year archives, and taxonomy,
- * author and pagination pages.
+ * Navigation a listing links to but that is no post: the listing itself, sign-in and registration
+ * pages, year archives, and taxonomy, author and pagination pages.
  */
 function navigationLink(url: string, listing: string): boolean {
-  if (listingItself(url, listing)) return true;
+  if (listingItself(url, listing) || isSignInUrl(url)) return true;
   const u = new URL(url);
   return /\/(label|labels|tag|tags|category|categories|author|authors|page)(\/|$)/i.test(u.pathname) || /\/(19|20)\d{2}(\/\d{1,2})?\/?$/.test(u.pathname);
 }
@@ -107,14 +81,33 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
     const page = await jinaRead(target, { purpose: "source_listing", subject: `source:${source.id}`, cacheToleranceSeconds: source.config.cacheToleranceSeconds, format, perRead: true });
     return { text: page.markdown, viaJina: true, base: source.config.baseUrl ?? target };
   }
-  const res = await fetchListing(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8" }, timeoutMs: 25_000 });
-  if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
-  return { text: res.text(), viaJina: false, base: source.config.baseUrl ?? res.url };
+  const res = requireOk(await fetchListing(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", ...languageHeaders(source.config.acceptLanguage) }, timeoutMs: 25_000 }));
+  const text = res.text();
+  contentDocument(text);
+  return { text, viaJina: false, base: source.config.baseUrl ?? res.url };
 }
 
 /** A listing title that is no headline: a label that swallowed its summary, or a call to action. */
 export const isCallToActionTitle = (title: string) => /^(read more|read the blog|learn more|continue reading|more|阅读全文|阅读更多|查看详情|了解更多)$/i.test(title.trim());
 export const needsTitle = (title: string) => title.length > 100 || isCallToActionTitle(title);
+
+/** Image destinations may contain balanced parentheses, including inside a linked card. */
+function withoutImages(md: string): string {
+  let text = "", copiedAt = 0;
+  for (const match of md.matchAll(/!\[[^\]]*\]\(/g)) {
+    if (match.index < copiedAt) continue;
+    let depth = 1, end = match.index + match[0].length;
+    for (; end < md.length && depth; end++) {
+      if (md[end] === "\\") end++;
+      else if (md[end] === "(") depth++;
+      else if (md[end] === ")") depth--;
+    }
+    if (depth) continue;
+    text += md.slice(copiedAt, match.index);
+    copiedAt = end;
+  }
+  return text + md.slice(copiedAt);
+}
 
 export function fromMarkdown(md: string, base: string, source: SourceRow): Candidate[] {
   const seen = new Map<string, Candidate>();
@@ -122,8 +115,8 @@ export function fromMarkdown(md: string, base: string, source: SourceRow): Candi
   const listing = String(source.config.url ?? base).replace(JINA_PREFIX, "");
   // Card links wrap an image and the text, [![alt](img) ##### Title …](url "Title"): images go first so the
   // link text is plain; a bare image link is then left without a title and skipped, as are nav-length labels.
-  const text = md.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
-  // Listings whose teasers link other articles in their prose (Axios: "capping a [chaotic three weeks](…)")
+  const text = withoutImages(md);
+  // Listings whose teasers link other articles in their prose ("capping a [chaotic three weeks](…)")
   // take only links that begin their line, after heading, list, quote or emphasis marks and image links.
   const startsLine = (at: number) =>
     /^[\s>#*+_|-]*(?:\d+[.)]\s*)?[\s*_]*$/.test(text.slice(text.lastIndexOf("\n", at - 1) + 1, at).replace(/\[\]\([^)]*\)/g, ""));
@@ -165,21 +158,23 @@ export function fromHtml(html: string, base: string, source: SourceRow): Candida
     const linkEl = c.linkSelector ? (el.is(c.linkSelector) ? el : el.find(c.linkSelector).first()) : el.is("a") ? el : el.find("a[href]").first();
     const url = absolute(linkEl.attr("href"), base);
     if (!url || seen.has(url) || !allowed(url, source)) continue;
+    // A card or a nav link to the site's sign-in form is no post.
+    if (isSignInUrl(url)) continue;
     if (!sectionsArePosts && listingItself(url, listing)) continue;
     const titleEl = c.titleSelector ? (el.is(c.titleSelector) ? el : el.find(c.titleSelector).first()) : linkEl;
     const title = collapseWhitespace(titleEl.text() || linkEl.attr("title") || "");
     if (!title) continue;
-    let publishedAt: Date | null = null;
+    let date: PublicationDate = { publishedAt: null, publicationTime: null };
     if (c.publishedAtSelector) {
       const dateEl = el.find(c.publishedAtSelector).first();
-      publishedAt = elementDate(dateEl, c.publishedAtUtcOffset);
+      date = elementDate(dateEl, c.publishedAtUtcOffset);
     }
-    if (!publishedAt && c.publishedAtRegex) {
+    if (!date.publishedAt && c.publishedAtRegex) {
       const m = new RegExp(c.publishedAtRegex).exec($.html(el));
-      publishedAt = parseLooseDate(m?.[1], c.publishedAtUtcOffset);
+      date = readPublicationDate(m?.[1], c.publishedAtUtcOffset);
     }
     seen.add(url);
-    out.push({ url, title, publishedAt });
+    out.push({ url, title, ...date });
   }
   return out;
 }
@@ -188,10 +183,10 @@ export function fromHtml(html: string, base: string, source: SourceRow): Candida
 const DATE_HEADING = /^(?:[^\d:：]{1,12}[:：])?\s*(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/;
 
 /** The day a date heading names, at midnight in the source's offset (Date.parse would read "时间: …" in the host's zone). */
-function headingDate(title: string, utcOffset = "+08:00"): Date | null | undefined {
+function headingDate(title: string, utcOffset = "+08:00"): PublicationDate | undefined {
   const m = DATE_HEADING.exec(title);
   if (!m) return undefined;
-  return parseLooseDate(`${m[1]}/${m[2]}/${m[3]}`, utcOffset);
+  return readPublicationDate(`${m[1]}/${m[2]}/${m[3]}`, utcOffset);
 }
 
 /** Intercom renders each date heading and paragraph in sibling blocks, with persistent heading IDs. */
@@ -201,8 +196,8 @@ function fromIntercomChangelog(html: string, base: string, source: SourceRow): C
   $("article .intercom-interblocks-subheading3:has(h3[id]), article .intercom-interblocks-subheading:has(h2[id])").each((_i, node) => {
     const block = $(node);
     const heading = block.find("h2[id], h3[id]").first();
-    const date = parseLooseDate(heading.text(), source.config.publishedAtUtcOffset ?? "+00:00");
-    if (!date) return;
+    const date = readPublicationDate(heading.text(), source.config.publishedAtUtcOffset ?? "+00:00");
+    if (!date.publishedAt) return;
     const parts: string[] = [];
     const titles: string[] = [];
     let next = block.next();
@@ -221,7 +216,7 @@ function fromIntercomChangelog(html: string, base: string, source: SourceRow): C
     if (!allowed(url.toString(), source)) return;
     out.push({
       url: url.toString(), identityKey: identityKeyForUrl(url.toString(), { keepFragment: true })!,
-      title: titles.join(" · ") || collapseWhitespace(heading.text()), publishedAt: date,
+      title: titles.join(" · ") || collapseWhitespace(heading.text()), ...date,
       bodyHtml, bodyText, bodyStatus: "ok",
     });
   });
@@ -233,7 +228,7 @@ function fromDocusaurusChangelog(html: string, base: string, source: SourceRow):
   const out: Candidate[] = [];
   const offset = source.config.publishedAtUtcOffset;
   // A date heading is no update itself: it dates the updates under it, up to the next h2.
-  let sectionDate: Date | null = null;
+  let sectionDate: PublicationDate | null = null;
   $("article h2[id], article h3[id], .markdown h2[id], .markdown h3[id]").each((_i, h) => {
     const head = $(h);
     const id = head.attr("id")!;
@@ -257,7 +252,7 @@ function fromDocusaurusChangelog(html: string, base: string, source: SourceRow):
       url,
       identityKey: `url:${url}`,
       title,
-      publishedAt: parseLooseDate(title, offset) ?? sectionDate ?? parseLooseDate(stripTags(bodyHtml).slice(0, 80), offset),
+      ...[readPublicationDate(title, offset), sectionDate, readPublicationDate(stripTags(bodyHtml).slice(0, 80), offset)].find(d => d?.publishedAt),
       bodyHtml,
       bodyText: stripTags(bodyHtml),
       bodyStatus: "ok",
@@ -267,9 +262,7 @@ function fromDocusaurusChangelog(html: string, base: string, source: SourceRow):
 }
 
 async function fetchScript(url: string): Promise<string> {
-  const res = await guardedFetch(url, { timeoutMs: 25_000 });
-  if (res.status !== 200) throw new FetchError(`HTTP ${res.status} for ${url}`, res.status);
-  return res.text();
+  return requireOk(await guardedFetch(url, { timeoutMs: 25_000 }), url).text();
 }
 
 /** A double-quoted string literal in minified script. */
@@ -363,7 +356,7 @@ export interface DetailNeed {
  * text ("Published Time: …", "# Heading"), so that paid rendering is bought only when such a rule is
  * needed; selectors and page metadata read the page's own HTML.
  */
-export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<{ publishedAt: Date | null; title: string | null; summary: string | null; body: ExtractedBody | null }> {
+export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<PublicationDate & { title: string | null; summary: string | null; body: ExtractedBody | null }> {
   const d = source.config.detail ?? {};
   const offset = articleUtcOffset(source.config);
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
@@ -371,34 +364,25 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
   const titleInJina = need.title && jinaListing && !!d.titleRegex;
   const jina = dateInJina || titleInJina ? (await jinaRead(url, { purpose: "source_detail", subject: `source:${source.id}` })).raw : null;
   let html: string | null = null;
-  let body: ExtractedBody | null = null;
+  let page: { document: ReturnType<typeof contentDocument>; url: string; whole: boolean } | null = null;
   if ((need.date && !dateInJina) || (need.title && !titleInJina) || need.summary) {
-    const res = await guardedFetch(url, { timeoutMs: 20_000 });
-    if (res.status !== 200) throw new FetchError(`HTTP ${res.status} for detail`, res.status);
+    // The rules read a page's head and byline. A page past the size limit (a long paper with inline
+    // figures) is read up to it rather than failing on every run; a body cut there is not kept.
+    const res = requireOk(await guardedFetch(url, { headers: languageHeaders(source.config.acceptLanguage), timeoutMs: 20_000, truncate: true }), "detail");
     html = res.text();
-    if (need.body && /html/.test(res.headers.get("content-type") ?? "")) {
-      try { body = readable(html, res.url, offset); }
-      catch { /* A failed extraction must not discard the detail metadata. */ }
-    }
+    page = { document: contentDocument(html), url: res.url, whole: !res.truncated && /html/.test(res.headers.get("content-type") ?? "") };
   }
   const $ = html === null ? null : cheerio.load(html);
 
-  let publishedAt: Date | null = null;
-  const dateText = dateInJina ? jina : html;
-  if (need.date && dateText !== null) {
-    if ($ && !dateInJina && d.publishedAtSelector) {
-      const el = $(d.publishedAtSelector).first();
-      publishedAt = elementDate(el, offset);
-    }
-    if (!publishedAt && d.publishedAtRegex) publishedAt = parseLooseDate(new RegExp(d.publishedAtRegex).exec(dateText)?.[1], offset);
-    // An authoritative rule is the only source of the date: when its byline is missing, no other
-    // timestamp on the page (an update time, a related post) stands in for it.
+  let date: PublicationDate = { publishedAt: null, publicationTime: null };
+  if (need.date) {
+    // The source's rule first. An authoritative rule is the only source of the date: when its byline is
+    // missing, no other timestamp on the page (an update time, a related post) stands in for it.
+    const dateText = dateInJina ? jina : html;
+    if ($ && !dateInJina && d.publishedAtSelector) date = elementDate($(d.publishedAtSelector).first(), offset);
+    if (!date.publishedAt && d.publishedAtRegex && dateText !== null) date = readPublicationDate(new RegExp(d.publishedAtRegex).exec(dateText)?.[1], offset);
     const authoritative = d.publishedAtAuthoritative === true && !!(d.publishedAtSelector || d.publishedAtRegex);
-    if (!publishedAt && $ && !dateInJina && !authoritative) {
-      const meta = $('meta[property="article:published_time"], meta[name="pubdate"], meta[itemprop="datePublished"]').attr("content");
-      publishedAt = parseLooseDate(meta, offset) ?? parseLooseDate(jsonLdPublished($, html!), offset)
-        ?? parseLooseDate($("time[datetime]").first().attr("datetime"), offset);
-    }
+    if (!date.publishedAt && page && !authoritative) date = pagePublicationDate(page.document, offset);
   }
 
   let title: string | null = null;
@@ -413,5 +397,12 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
     const el = $(d.summarySelector).first();
     summary = collapseWhitespace(el.attr("content") ?? el.text()) || null;
   }
-  return { publishedAt, title, summary, body };
+
+  // The body last, from the same document: Readability changes what it reads.
+  let body: ExtractedBody | null = null;
+  if (need.body && page?.whole) {
+    try { body = readableDocument(page.document, page.url, pageRules(source.config)); }
+    catch { /* A failed extraction must not discard the detail metadata. */ }
+  }
+  return { ...date, title, summary, body };
 }

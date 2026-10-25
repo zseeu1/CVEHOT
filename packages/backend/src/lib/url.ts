@@ -137,26 +137,54 @@ export function isBlockedAddress(address: string): boolean {
   return false;
 }
 
+function ipv4PrivateService(o: [number, number, number, number]): boolean {
+  const [a, b, c, d] = o;
+  if (a === 100 && b === 100 && c === 100 && d === 200) return false; // Alibaba Cloud metadata, inside carrier-grade NAT
+  return a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+/**
+ * Where a self-hosted service may run: loopback, private, carrier-grade NAT and unique local
+ * addresses, never link-local, cloud metadata (100.100.100.200, fd00:ec2::254), multicast or reserved ranges.
+ */
+function privateServiceAddress(address: string): boolean {
+  const v4 = parseIpv4(address);
+  if (v4) return ipv4PrivateService(v4);
+  const g = ipv6Groups(address);
+  if (!g) return false;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return ipv4PrivateService(embeddedIpv4(g[6]!, g[7]!));
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true; // ::1
+  return (g[0]! & 0xfe00) === 0xfc00 && !(g[0] === 0xfd00 && g[1] === 0xec2 && g.slice(2, 7).every((x) => x === 0) && g[7] === 0x254);
+}
+
+/** A listed private feed host (PRIVATE_FEED_HOSTS) may also use private service addresses. */
+function refusedAddress(address: string, listed: boolean): boolean {
+  return isBlockedAddress(address) && !(listed && privateServiceAddress(address));
+}
+
 function blockedHostname(host: string): boolean {
-  return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".internal") || host === "metadata.google.internal";
+  const name = host.replace(/\.$/, "");
+  return name === "localhost" || name.endsWith(".localhost") || name.endsWith(".internal") || name === "metadata.google.internal";
 }
 
 /**
  * Rejects non-HTTP URLs and private destinations. Direct requests check the system DNS again at
  * connect time; proxy requests supply their outbound resolver and pin its answer in the tunnel.
- * Only local debugging may disable the guard via ALLOW_PRIVATE_NETWORK_FETCH.
+ * Only local debugging may disable the guard via ALLOW_PRIVATE_NETWORK_FETCH; `privateHosts` are whole
+ * names that may reach a self-hosted service on a private address.
  */
-export async function assertPublicUrl(url: string, allowPrivate = false, resolve?: (host: string) => Promise<string[]>): Promise<URL> {
+export async function assertPublicUrl(url: string, allowPrivate = false, resolve?: (host: string) => Promise<string[]>, privateHosts: readonly string[] = []): Promise<URL> {
   const u = new URL(url);
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`Blocked protocol ${u.protocol}`);
   if (allowPrivate) return u;
   const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (blockedHostname(host)) throw new Error(`Blocked host ${host}`);
+  const listed = privateHosts.includes(host);
+  if (!listed && blockedHostname(host)) throw new Error(`Blocked host ${host}`);
   const literal = net.isIP(host) !== 0;
   const addresses = literal ? [{ address: host }] : resolve ? (await resolve(host)).map((address) => ({ address })) : await lookup(host, { all: true });
   if (addresses.length === 0) throw new Error(`No address for ${host}`);
   for (const { address } of addresses) {
-    if (isBlockedAddress(address)) throw new Error(`Blocked private address for ${host}`);
+    if (refusedAddress(address, listed)) throw new Error(`Blocked private address for ${host}`);
   }
   return u;
 }
@@ -165,17 +193,19 @@ type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | Arra
 
 /**
  * DNS lookup for outbound sockets that refuses blocked addresses. Used as the connect-time lookup,
- * it closes the gap between the URL check and the connection (DNS rebinding).
+ * it closes the gap between the URL check and the connection (DNS rebinding). `privateHosts` as in
+ * assertPublicUrl.
  */
-export function guardedLookup(hostname: string, options: { all?: boolean; family?: number } | number, callback: LookupCallback): void {
+export function guardedLookup(hostname: string, options: { all?: boolean; family?: number } | number, callback: LookupCallback, privateHosts: readonly string[] = []): void {
   const opts = typeof options === "number" ? { family: options } : options;
-  if (blockedHostname(hostname.toLowerCase())) {
+  const listed = privateHosts.includes(hostname.toLowerCase());
+  if (!listed && blockedHostname(hostname.toLowerCase())) {
     callback(Object.assign(new Error(`Blocked host ${hostname}`), { code: "EBLOCKED" }), opts.all ? [] : "", 0);
     return;
   }
   lookup(hostname, { all: true, family: opts.family ?? 0 }).then(
     (list) => {
-      const bad = list.find((a) => isBlockedAddress(a.address));
+      const bad = list.find((a) => refusedAddress(a.address, listed));
       if (bad || list.length === 0) {
         callback(Object.assign(new Error(`Blocked private address for ${hostname}`), { code: "EBLOCKED" }), opts.all ? [] : "", 0);
         return;

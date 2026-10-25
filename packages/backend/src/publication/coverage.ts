@@ -1,5 +1,5 @@
 // How widely a fact was reported: the editorial sources whose listed reports are evidence of it, by a
-// cutoff, as the daily's "另有 N 家信源报道" counts it.
+// cutoff, as the daily's "另外 N 家也报道了" counts it.
 import { sql } from "../db.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
 

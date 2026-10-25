@@ -2,6 +2,7 @@
 // Every route goes through adminHandler (session + CSRF); manual changes are audited in the modules.
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AdminSourceUpdate } from "@aihot/contracts/admin";
 import { actorOf } from "@aihot/backend/admin/auth";
 import { navCounts } from "@aihot/backend/admin/navigation";
 import { listAudit } from "@aihot/backend/audit";
@@ -9,7 +10,7 @@ import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aiho
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
 import { contentChain, overrideFields, rerun, searchContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { detachFromFact, mergeStories } from "@aihot/backend/events/corrections";
-import { banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
+import { banFeedbackEmail, banSource, eraseFeedback, feedbackScreenshot, listFeedback, unbanSource, updateFeedback } from "@aihot/backend/admin/feedback";
 import { requeueFailedArticles, runsOverview } from "@aihot/backend/admin/runs";
 import { resolveDelivery } from "@aihot/backend/notify/deliver";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
@@ -43,7 +44,7 @@ export function registerAdmin(app: FastifyInstance) {
   app.post("/api/admin/sources/preview", adminHandler(async (req) => previewSource(body(req) as never)));
   app.get("/api/admin/sources/:id", adminHandler(async (req, reply) => orNotFound(req, reply, await sourceDetail(param(req, "id")))));
   app.patch("/api/admin/sources/:id", adminHandler(async (req, reply, admin) => {
-    const b = body<{ patch: unknown; version: string; reason?: string }>(req);
+    const b = body<AdminSourceUpdate>(req);
     return orNotFound(req, reply, await updateSource(param(req, "id"), b, actorOf(admin)));
   }));
   app.post("/api/admin/sources/:id/preview", adminHandler(async (req, reply) => orNotFound(req, reply, await previewStoredSource(param(req, "id")))));
@@ -56,9 +57,9 @@ export function registerAdmin(app: FastifyInstance) {
   app.post("/api/admin/content/:id/seo", adminHandler(async (req, reply, admin) => orNotFound(req, reply, await setSeoIndexed(param(req, "id"), body(req) as never, actorOf(admin)))));
   app.post("/api/admin/content/:id/override", adminHandler(async (req, _reply, admin) => overrideFields(param(req, "id"), body(req) as never, actorOf(admin))));
   app.post("/api/admin/content/:id/rerun", adminHandler(async (req, reply, admin) => {
-    const b = body<{ step: "extract" | "analyze" | "group" }>(req);
+    const b = body<import("@aihot/contracts/admin").AdminRerun>(req);
     const requestId = String(req.headers["idempotency-key"] ?? "");
-    return orNotFound(req, reply, await rerun(param(req, "id"), b.step, requestId, actorOf(admin)));
+    return orNotFound(req, reply, await rerun(param(req, "id"), b.step, requestId, actorOf(admin), { preview: b.preview, version: b.version }));
   }));
   app.post("/api/admin/content/:id/detach", adminHandler(async (req, _reply, admin) => detachFromFact(param(req, "id"), String(body(req).reason ?? ""), actorOf(admin))));
   app.post("/api/admin/stories/merge", adminHandler(async (req, _reply, admin) => {
@@ -78,8 +79,9 @@ export function registerAdmin(app: FastifyInstance) {
     return reply.type(ext === "jpeg" || ext === "jpg" ? "image/jpeg" : `image/${ext}`).send(data);
   }));
   app.post("/api/admin/feedback-bans", adminHandler(async (req, reply, admin) => {
-    const b = body<{ sourceHash: string; reason: string }>(req);
-    await banSource(b.sourceHash, b.reason, actorOf(admin));
+    const b = body<{ sourceHash: string; feedbackId?: number; reason: string }>(req);
+    if (b.feedbackId !== undefined) await banFeedbackEmail(b.feedbackId, b.reason, actorOf(admin));
+    else await banSource(b.sourceHash, b.reason, actorOf(admin));
     return reply.code(204).send();
   }));
   app.delete("/api/admin/feedback-bans/:hash", adminHandler(async (req, reply, admin) => {

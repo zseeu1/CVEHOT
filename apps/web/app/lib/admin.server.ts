@@ -2,9 +2,13 @@
 import { data, redirect } from "react-router";
 import { API_BASE_URL } from "./api.server.ts";
 
+function adminHeaders(request: Request) {
+  return { accept: "application/json", cookie: request.headers.get("cookie") ?? "", "user-agent": request.headers.get("user-agent") ?? "" };
+}
+
 export async function adminGet<T>(request: Request, path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { accept: "application/json", cookie: request.headers.get("cookie") ?? "", "user-agent": request.headers.get("user-agent") ?? "" },
+    headers: adminHeaders(request),
     signal: AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]),
   });
   if (res.status === 401) {
@@ -22,4 +26,13 @@ export async function adminGet<T>(request: Request, path: string): Promise<T> {
     throw data({ message: detail }, { status: res.status >= 500 ? 503 : res.status });
   }
   return (await res.json()) as T;
+}
+
+/** Whether this request already carries an admin session (or the development stand-in). */
+export async function adminSignedIn(request: Request): Promise<boolean> {
+  const res = await fetch(`${API_BASE_URL}/api/admin/me`, {
+    headers: adminHeaders(request),
+    signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
+  });
+  return res.ok;
 }

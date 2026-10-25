@@ -1,7 +1,7 @@
 // SocialData (X search). Paid per request: every call goes through receipts and the budget.
 import { credential } from "../config.ts";
 import { guardedFetch } from "../lib/http-fetch.ts";
-import { assertAccepted, paidRequest, type CallOutcome, type ReceiptRequest, type ReceiptResult } from "./receipts.ts";
+import { assertAccepted, paidRequest, ProviderRejectedError, type CallOutcome, type ReceiptRequest, type ReceiptResult } from "./receipts.ts";
 
 export interface SdUser {
   name: string;
@@ -155,10 +155,19 @@ export async function getArticle(tweetId: string, opts: { purpose: string; subje
   return (receipt.response as SdArticle | null) ?? null;
 }
 
-/** One tweet by id (context for replies and quotes). Paid; the receipt makes retries free. */
-export async function getTweet(id: string, opts: { purpose: string; subject: string }): Promise<SdTweet | null> {
+/** SocialData refused a post because its account is private: no post of it can show who the account is now. */
+export function privateAccountRefusal(error: unknown): boolean {
+  return error instanceof ProviderRejectedError && error.status === 403
+    && error.message.includes("Forbidden: Requested resource cannot be viewed due to user's privacy settings");
+}
+
+/**
+ * One tweet by id (context for replies and quotes, or who wrote it now). Paid; the receipt makes retries
+ * free. A `window` asks again in each window instead of reusing the first answer.
+ */
+export async function getTweet(id: string, opts: { purpose: string; subject: string; window?: string }): Promise<SdTweet | null> {
   const receipt = await get<SdTweet>(`/twitter/tweets/${encodeURIComponent(id)}`,
-    { purpose: opts.purpose, subject: opts.subject, identity: { tweet: id }, requestSummary: { tweet: id } },
+    { purpose: opts.purpose, subject: opts.subject, identity: opts.window ? { tweet: id, window: opts.window } : { tweet: id }, requestSummary: { tweet: id } },
     { ...LOOKUP, missing: { tweets: 0 }, settle: (json) => ({ response: json, usage: { tweets: 1 }, cost: objectsCost(1) }) });
   return (receipt.response as SdTweet | null) ?? null;
 }

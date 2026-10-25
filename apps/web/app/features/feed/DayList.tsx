@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import type { FeedItemSummary } from "@aihot/contracts/site";
 import { IconChevronRight } from "../../components/icons";
 import { beijingDate } from "@aihot/contracts/time";
+import { byBeijingDay } from "../../lib/format";
 import { markRead, useReadSet } from "../../lib/local-state";
 import { DayHeader, TimelineSlot } from "./Timeline";
 import { FeedItem } from "./FeedItem";
@@ -12,19 +13,10 @@ import { FeedItem } from "./FeedItem";
 export function DayList({ items, todayCount = null, headerAside }: { items: FeedItemSummary[]; todayCount?: number | null; headerAside?: React.ReactNode }) {
   const readSet = useReadSet();
   const today = beijingDate(Date.now());
-  const days = useMemo(() => {
-    const out: Array<{ day: string; items: FeedItemSummary[] }> = [];
-    for (const it of items) {
-      const d = beijingDate(it.timelineAt);
-      const last = out[out.length - 1];
-      if (last && last.day === d) last.items.push(it);
-      else out.push({ day: d, items: [it] });
-    }
-    return out;
-  }, [items]);
+  const days = useMemo(() => byBeijingDay(items, (it) => it.timelineAt), [items]);
   return (
     <div>
-      {days.map(({ day, items: list }, i) => (
+      {days.map(({ day, entries: list }, i) => (
         <section key={day} aria-label={day}>
           <DayHeader day={day} today={today} count={day === today ? todayCount : null} aside={i === 0 ? headerAside : undefined} />
           <ol className="lg:pt-1">

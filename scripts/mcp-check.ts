@@ -1,6 +1,6 @@
 // Verifies the public MCP contract with the official SDK client: server identity, the exact tool set,
 // representative read calls, domain errors and schema validation. It is safe against an empty database.
-// Modules without checkArgs are called only if their input accepts {}; otherwise only discovery is checked.
+// A module's tool is called with {} when its input accepts it; otherwise only discovery is checked.
 // --full also checks successful report and story reads, which need a populated site.
 // node scripts/mcp-check.ts [url] [--full]
 import { Client } from "@modelcontextprotocol/client";
@@ -16,7 +16,6 @@ const url = new URL(args.find((a) => !a.startsWith("--")) ?? "http://127.0.0.1:3
 /** The site's modules' tools, after the engine's. */
 const moduleTools = SERVER_MODULES.flatMap((m) => m.agent?.abilities ?? []).map((a) => ({
   name: mcpToolName(a.mcp.tool),
-  args: a.mcp.checkArgs,
   input: a.mcp.input,
 }));
 const client = new Client({ name: `${SITE.mcpPrefix}-mcp-check`, version: "1.0.0" });
@@ -73,9 +72,8 @@ try {
   await call(T.search, { q: "OpenAI", limit: 2 });
   await call(T.hot, { limit: 3 });
   for (const tool of moduleTools) {
-    if (tool.args !== undefined) await call(tool.name, tool.args);
-    else if ((await tool.input.safeParseAsync({})).success) await call(tool.name, {});
-    else console.log(`${tool.name} → discovery only (no checkArgs and input rejects {})`);
+    if ((await tool.input.safeParseAsync({})).success) await call(tool.name, {});
+    else console.log(`${tool.name} → discovery only (input rejects {})`);
   }
 
   // Exercise the remaining tools without depending on seeded reports/stories.

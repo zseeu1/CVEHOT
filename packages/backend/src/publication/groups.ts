@@ -1,4 +1,4 @@
-// Duplicate reports of one news fact ("另有 N 家信源报道"). Members must pass the same visibility, pool
+// Duplicate reports of one news fact ("另外 N 家也报道了"). Members must pass the same visibility, pool
 // eligibility and parent-page filters as the card they open under.
 import type { CategoryKey, ChannelKey } from "@aihot/contracts/taxonomy";
 import type { GroupReportsResponse } from "@aihot/contracts/site";

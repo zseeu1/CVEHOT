@@ -68,7 +68,7 @@ const SOURCES = {
 const id = (name: keyof typeof SOURCES) => `test-rules-${name}-${T}`;
 before(async () => {
   await sql`UPDATE budgets SET per_minute = 1000, per_hour = 10000, per_day = 100000 WHERE service = 'jina'`;
-  const cursor = sql.json({ initializedAt: new Date().toISOString() });
+  const cursor = sql.json({ initializedAt: "2026-09-20T00:00:00.000Z" });
   for (const [name, s] of Object.entries(SOURCES)) {
     await sql`INSERT INTO sources (id, name, kind, config, tier, participation_mode, cursor, next_fetch_at)
               VALUES (${id(name as keyof typeof SOURCES)}, ${name}, ${s.kind}, ${sql.json(s.config)}, 'T1', 'editorial', ${cursor}, '2100-01-01')`;

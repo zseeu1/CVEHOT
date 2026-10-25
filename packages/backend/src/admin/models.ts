@@ -4,8 +4,9 @@
 // new work only.
 import type { AdminModels, BeforeJson } from "@aihot/contracts/admin";
 import { sql } from "../db.ts";
-import { capabilities, capabilityAcceptsModel, invalidateModelCache, modelSources } from "../editorial/models.ts";
+import { capabilities, capabilityAcceptsModel, fallbackModelFor, invalidateModelCache, modelSources } from "../editorial/models.ts";
 import { MODELS } from "../providers/llm.ts";
+import { modelCircuits } from "../providers/circuit.ts";
 import { audit } from "../audit.ts";
 
 interface UsageRow {
@@ -31,8 +32,9 @@ interface UsageRow {
 
 export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>> {
   const since = new Date(Date.now() - days * 86400_000);
-  const [sources, usage, prices, history, benches] = await Promise.all([
+  const [sources, circuits, usage, prices, history, benches] = await Promise.all([
     modelSources(),
+    modelCircuits(),
     sql<UsageRow[]>`
       SELECT r.purpose, a.model, r.request->>'promptVersion' AS prompt_version, count(*)::int AS calls,
              count(*) FILTER (WHERE a.status = 'received')::int AS ok,
@@ -69,32 +71,39 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
     const amount = (fresh / 1e6) * Number(p.input_per_mtok ?? 0) + (cached / 1e6) * Number(p.cached_per_mtok ?? p.input_per_mtok ?? 0) + (Number(u.tokens_out_uncosted ?? 0) / 1e6) * Number(p.output_per_mtok ?? 0);
     return { amount, currency: p.currency };
   };
-  const steps = Object.entries(capabilities()).map(([key, c]) => ({
-    key,
-    label: c.label,
-    env: c.env,
-    defaultModel: c.default,
-    vision: !!c.vision,
-    current: sources[key]!,
-    usage: usage
-      .filter((u) => c.purposes.includes(u.purpose))
-      .map((u) => ({
-        purpose: u.purpose,
-        model: u.model,
-        promptVersion: u.prompt_version,
-        calls: u.calls,
-        ok: u.ok,
-        failed: u.failed,
-        unknown: u.unknown,
-        p50: u.p50,
-        p95: u.p95,
-        tokensIn: Number(u.tokens_in ?? 0),
-        tokensOut: Number(u.tokens_out ?? 0),
-        actualCost: u.actual_cost === null ? null : Number(u.actual_cost),
-        currency: u.currency,
-        estimate: priced(u),
-      })),
-  }));
+  const steps = Object.entries(capabilities()).map(([key, c]) => {
+    const backup = fallbackModelFor(key, sources[key]!.model);
+    const primaryCircuit = circuits[MODELS[sources[key]!.model]!.service];
+    const backupCircuit = backup ? circuits[MODELS[backup]!.service] : undefined;
+    return {
+      key,
+      label: c.label,
+      env: c.env,
+      defaultModel: c.default,
+      vision: !!c.vision,
+      current: sources[key]!,
+      fallback: backup ? { model: backup, primaryPaused: !!primaryCircuit?.openUntil, backupPaused: !!backupCircuit?.openUntil,
+        nextProbeAt: primaryCircuit?.openUntil ? new Date(Math.max(primaryCircuit.openUntil, primaryCircuit.probeUntil)).toISOString() : null } : null,
+      usage: usage
+        .filter((u) => c.purposes.includes(u.purpose))
+        .map((u) => ({
+          purpose: u.purpose,
+          model: u.model,
+          promptVersion: u.prompt_version,
+          calls: u.calls,
+          ok: u.ok,
+          failed: u.failed,
+          unknown: u.unknown,
+          p50: u.p50,
+          p95: u.p95,
+          tokensIn: Number(u.tokens_in ?? 0),
+          tokensOut: Number(u.tokens_out ?? 0),
+          actualCost: u.actual_cost === null ? null : Number(u.actual_cost),
+          currency: u.currency,
+          estimate: priced(u),
+        })),
+    };
+  });
   const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
   return { days, capabilities: steps, choices, history, benches };
 }

@@ -7,9 +7,9 @@ import { after, test } from "node:test";
 import { z } from "zod";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
-import { chatJson, ModelOutputError } from "@aihot/backend/providers/llm";
+import { chatJson } from "@aihot/backend/providers/llm";
 import { embeddingsAvailable } from "@aihot/backend/providers/embeddings";
-import { BudgetExceededError, logicalKeyFor, markStalePendingReceipts, paidRequest, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { assertAccepted, failureKind, ProviderRejectedError, BudgetExceededError, logicalKeyFor, markStalePendingReceipts, ModelOutputError, paidRequest, providerStopKey, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 import { autoReleaseUnknownReceipts } from "@aihot/backend/operations/recover";
 
 const usage = { prompt_tokens: 80, completion_tokens: 20, total_tokens: 100 };
@@ -24,6 +24,47 @@ const ask = (subject: string) =>
 after(async () => {
   await provider.close();
   await closeDb();
+});
+
+// HTTP 429 also carries account/plan refusals; the same "insufficient_quota" code means
+// temporary TPM throttling at DashScope. A generic quota match gets both decisions wrong.
+test("429 distinguishes documented spending refusals from request and token rate limits", () => {
+  const cases: [string, unknown, "refused" | "outage"][] = [
+    ["llm", { type: "GoUsageLimitError", message: "Go usage limit exceeded" }, "refused"],
+    ["llm", { type: "error", error: { type: "GoUsageLimitError", message: "Go usage limit exceeded" } }, "refused"],
+    ["llm", { error: { type: "FreeUsageLimitError", message: "Rate limit exceeded. Please try again later." } }, "refused"],
+    ["zhipu", { error: { code: "1113", message: "account unavailable" } }, "refused"],
+    ["zhipu", { error: { code: 1308, message: "usage window exhausted" } }, "refused"],
+    ["zhipu", { error: { code: "1309", message: "subscription expired" } }, "refused"],
+    ["zhipu", { error: { code: "1310", message: "weekly or monthly limit reached" } }, "refused"],
+    ["dashscope", { code: "BudgetLimitExceeded", message: "budget reached" }, "refused"],
+    ["dashscope", { error: { code: "PrepaidBillOverdue", message: "service expired" } }, "refused"],
+    ["dashscope", { error: { code: "PostpaidBillOverdue", message: "service expired" } }, "refused"],
+    ["dashscope", { code: "CommodityNotPurchased", message: "subscription missing" }, "refused"],
+    ["dashscope", { code: "Throttling.AllocationQuota", message: "Free allocated quota exceeded." }, "refused"],
+    ["llm", { error: { message: "x".repeat(900), code: "credit_balance_exhausted" } }, "refused"],
+    ["llm", { error: { code: "organization_usage_limit_exceeded" } }, "refused"],
+    ["llm", { error: { code: "organization_spend_limit_exceeded" } }, "refused"],
+    ["llm", { error: { code: "project_spend_limit_exceeded" } }, "refused"],
+    ["mimo", { error: { message: "Insufficient balance" } }, "refused"],
+    ["zhipu", { error: { code: "1302", message: "请求频率过高" } }, "outage"],
+    ["zhipu", { error: { code: "1305", message: "服务暂时不可用" } }, "outage"],
+    ["dashscope", { error: { code: "insufficient_quota", message: "You exceeded your current quota, please check your plan and billing details." } }, "outage"],
+    ["dashscope", { code: "Throttling.AllocationQuota", message: "Allocated quota exceeded, please increase your quota limit." }, "outage"],
+    ["dashscope", { code: "Throttling.RateQuota", message: "Requests rate limit exceeded, please try again later." }, "outage"],
+    ["dashscope", { code: "Throttling.ResourceExhausted", message: "Too many requests." }, "outage"],
+    ["deepseek", { error: { message: "Rate limit reached" } }, "outage"],
+    ["mimo", { error: { message: "quota exceeded" } }, "outage"],
+    ["llm", { error: { code: "insufficient_quota", message: "quota exceeded" } }, "outage"],
+    ["llm", { error: { code: "slow_down", message: "rate limit reached" } }, "outage"],
+  ];
+  for (const [service, response, expected] of cases) {
+    assert.throws(() => assertAccepted(service, 429, JSON.stringify(response)), (error: unknown) => {
+      assert.ok(error instanceof ProviderRejectedError);
+      assert.equal(failureKind(error), expected, `${service}: ${JSON.stringify(response)}`);
+      return true;
+    });
+  }
 });
 
 test("the migrations seed a budget for every paid service", async () => {
@@ -277,4 +318,102 @@ test("an unknown outcome is released automatically once, so a lost answer costs 
   assert.equal(await status(), "unknown", "a second loss waits for the admin");
   await assert.rejects(paidRequest(req, lost), ReceiptUnknownError);
   assert.equal(sent, 2);
+});
+
+// The classification the alert layer already uses: a TPM/RPM throttle may pass; an account, spending or
+// access refusal stops new calls, because the same request would be refused again in a minute.
+test("a throttle is not a spent account: only an access or billing refusal stops calls", () => {
+  const throttle = (body: string) => assert.throws(
+    () => assertAccepted("dashscope", 429, body),
+    (error: unknown) => error instanceof ProviderRejectedError && error.retryable && !error.accessRefused,
+  );
+  throttle('{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded"}');
+  throttle('{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}');
+  const refused = (body: string) => assert.throws(
+    () => assertAccepted("dashscope", 429, body),
+    (error: unknown) => error instanceof ProviderRejectedError && error.accessRefused,
+  );
+  refused('{"code":"CommodityNotPurchased","message":"product not purchased"}');
+  refused('{"type":"error","error":{"type":"GoUsageLimitError","message":"Go plan usage limit reached"}}');
+  refused('{"error":{"message":"insufficient balance"}}');
+});
+
+test("an access refusal stops new calls until the cooldown, and a real answer releases the stop", async () => {
+  const service = `invariant-stop-${tag()}`;
+  let sent = 0;
+  const refuse = async () => {
+    sent += 1;
+    assertAccepted(service, 402, '{"error":{"message":"insufficient balance"}}');
+    return { response: null };
+  };
+  try {
+    await assert.rejects(paidRequest({ service, purpose: "invariant_test", identity: "first" }, refuse), ProviderRejectedError);
+    assert.equal(sent, 1);
+    const [stop] = await sql<{ value: { until: string } }[]>`SELECT value FROM settings WHERE key = ${providerStopKey(service)}`;
+    assert.ok(stop, "the refusal records a stop");
+    // The attempt keeps the provider's own words, so the refused-provider alert classifies it the same way.
+    const [attempt] = await sql<{ error: string }[]>`SELECT error FROM receipt_attempts WHERE service = ${service} ORDER BY id DESC LIMIT 1`;
+    assert.match(attempt!.error, /insufficient balance/);
+
+    // The next logical request is stopped before it is sent.
+    await assert.rejects(paidRequest({ service, purpose: "invariant_test", identity: "second" }, refuse), BudgetExceededError);
+    assert.equal(sent, 1, "no request reaches the provider while the stop holds");
+
+    // A stop, not a verdict: once the cooldown runs out a probe is allowed.
+    await sql`UPDATE settings SET value = jsonb_build_object('until', ${new Date(Date.now() - 1000).toISOString()}::text) WHERE key = ${providerStopKey(service)}`;
+    const ok = await paidRequest({ service, purpose: "invariant_test", identity: "third" }, async () => { sent += 1; return { response: { ok: true } }; });
+    assert.ok(ok.receiptId);
+    assert.equal(sent, 2, "calls resume after the cooldown");
+    assert.equal((await sql`SELECT 1 FROM settings WHERE key = ${providerStopKey(service)}`).length, 0, "a received answer releases the stop");
+  } finally {
+    await sql`DELETE FROM receipts WHERE service = ${service}`;
+    await sql`DELETE FROM settings WHERE key = ${providerStopKey(service)}`;
+  }
+});
+
+test("a TPM throttle does not stop the service", async () => {
+  const service = `invariant-throttle-${tag()}`;
+  let sent = 0;
+  try {
+    await assert.rejects(paidRequest({ service, purpose: "invariant_test", identity: "throttle" }, async () => {
+      sent += 1;
+      assertAccepted(service, 429, '{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded"}');
+      return { response: null };
+    }), ProviderRejectedError);
+    assert.equal(sent, 1);
+    assert.equal((await sql`SELECT 1 FROM settings WHERE key = ${providerStopKey(service)}`).length, 0, "a temporary throttle leaves the service callable");
+  } finally {
+    await sql`DELETE FROM receipts WHERE service = ${service}`;
+  }
+});
+test("a resource-level 403 (a private account) stops nothing", async () => {
+  const service = `invariant-private-${tag()}`;
+  try {
+    await assert.rejects(paidRequest({ service, purpose: "invariant_test", identity: "private" }, async () => {
+      assertAccepted(service, 403, '{"error":{"message":"Forbidden: user privacy settings"}}');
+      return { response: null };
+    }), ProviderRejectedError);
+    assert.equal((await sql`SELECT 1 FROM settings WHERE key = ${providerStopKey(service)}`).length, 0, "one private resource does not stop the service");
+  } finally {
+    await sql`DELETE FROM receipts WHERE service = ${service}`;
+  }
+});
+
+test("one model's spent quota stops that model, not the service's other models", async () => {
+  // dashscope's free quota is per model: the refused-provider alert is per model too (operations/alerts.ts).
+  const vision = `vision-${tag()}`;
+  const text = `text-${tag()}`;
+  try {
+    await assert.rejects(paidRequest({ service: "dashscope", model: vision, purpose: "invariant_test", identity: "vision" }, async () => {
+      assertAccepted("dashscope", 429, '{"code":"Throttling.AllocationQuota","message":"Free allocated quota exceeded."}');
+      return { response: null };
+    }), ProviderRejectedError);
+    assert.equal((await sql`SELECT 1 FROM settings WHERE key = ${providerStopKey("dashscope", vision)}`).length, 1, "the refused model is stopped");
+    let sent = 0;
+    await paidRequest({ service: "dashscope", model: text, purpose: "invariant_test", identity: "text" }, async () => { sent += 1; return { response: { ok: true } }; });
+    assert.equal(sent, 1, "another model of the same service is still called");
+  } finally {
+    await sql`DELETE FROM receipts WHERE service = 'dashscope' AND model IN (${vision}, ${text})`;
+    await sql`DELETE FROM settings WHERE key = ${providerStopKey("dashscope", vision)}`;
+  }
 });

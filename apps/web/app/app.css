@@ -12,6 +12,10 @@
    --------------------------------------------------------------------------- */
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* The initial family is the reader's standard browser font, unlike system-ui or sans-serif. */
+:root[data-font="browser"] { font-family: initial; }
+[data-font="browser"] body, [data-font="browser"] .font-sans { font-family: inherit; }
 /* Touch screens (no hover): pressed states for rows and cards. */
 @custom-variant touch (@media (hover: none));
 
@@ -23,12 +27,12 @@
   --color-bg: var(--bg);
   --color-bg-sunk: var(--bg-sunk);
   --color-bg-muted: var(--bg-muted);
+  --color-well: var(--well);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-raised: var(--raised);
   --color-sidebar: var(--sidebar);
   --color-daybar: var(--daybar);
-  --color-field: var(--field);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);
@@ -91,12 +95,13 @@
   --bg: #faf9f6;
   --bg-sunk: #f3f3ef;
   --bg-muted: #e9ede9;
+  /* Sunk fills: wells, pill tracks, search fields, quiet badges. */
+  --well: var(--bg-sunk);
   --surface: #ffffff;
   --surface-2: #fdfdfb;
   --raised: #ffffff;
   --sidebar: #fdfdfb;
   --daybar: #f0f2ee;
-  --field: #eef1ed;
   --ink: #202a30;
   --ink-2: #303c42;
   --ink-3: #59656b;
@@ -149,12 +154,12 @@
   --bg: #13191c;
   --bg-sunk: #182024;
   --bg-muted: #202a2f;
+  --well: color-mix(in oklab, var(--bg-muted) 60%, transparent);
   --surface: #1a2226;
   --surface-2: #1d272b;
   --raised: #202a2f;
   --sidebar: #161e21;
   --daybar: #182024;
-  --field: rgba(255, 255, 255, 0.06);
   --ink: #e7eceb;
   --ink-2: #d2dada;
   --ink-3: #a5b0b3;
@@ -294,7 +299,7 @@
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: var(--radius-mark);
   }
   a {
     color: inherit;
@@ -394,11 +399,8 @@
 /* The well: a quiet sunk panel for what navigates or annotates rather than reads (the report's 报眼,
    the hot lead's heat panel, notes on about and feedback). Radius is set where it is used. */
 @utility well {
-  background-color: var(--bg-sunk);
+  background-color: var(--well);
   box-shadow: inset 0 0 0 1px var(--line-soft);
-  [data-theme="dark"] & {
-    background-color: color-mix(in srgb, var(--bg-muted) 60%, transparent);
-  }
 }
 @utility card-hover {
   transition: box-shadow 200ms var(--ease-out-quart), border-color 200ms, transform 200ms var(--ease-out-quart);
@@ -451,9 +453,9 @@
 .anim-drop-out { animation: aihot-drop-out 140ms ease-in both; }
 .anim-notice-in { animation: aihot-notice-in 200ms var(--ease-out-quart) both; }
 .anim-zoom-in { animation: aihot-zoom-in 180ms var(--ease-out-quart) both; }
-.anim-zoom-out, .anim-fade-out > .lightbox-img { animation: aihot-zoom-out 160ms ease-in both; }
+.anim-fade-out > .lightbox-img { animation: aihot-zoom-out 160ms ease-in both; }
 .anim-sheet-in { animation: aihot-sheet-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-.anim-sheet-out, .anim-fade-out > .sheet-panel { animation: aihot-sheet-out 220ms cubic-bezier(0.4, 0, 1, 1) both; }
+.anim-fade-out > .sheet-panel { animation: aihot-sheet-out 220ms cubic-bezier(0.4, 0, 1, 1) both; }
 .anim-swap-in { animation: aihot-swap-in 120ms var(--ease-out-quart) both; }
 .anim-bump { animation: aihot-bump 320ms var(--ease-out-quart) both; }
 .anim-pop-in { animation: aihot-pop-in 460ms var(--ease-out-quart) both; }

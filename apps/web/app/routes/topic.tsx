@@ -12,20 +12,24 @@ import { IconArrowLeft } from "../components/icons";
 import { beijingDate } from "@aihot/contracts/time";
 import { monthDay, monthDayTime } from "../lib/format";
 import { PhoneBar } from "../components/shell/PhoneBar";
+import { navUp } from "../components/shell/nav";
 import type { Screen } from "../components/shell/screens";
 import type { TopicPagePart } from "../modules";
 import { loadParts } from "../site-modules";
 
-export const handle: Screen = { home: "me" };
+// Topics are reached from the topics page, as long as the site shows it.
+const UP = navUp("/topics");
+export const handle: Screen = { home: UP.tab };
 export { pageHeaders as headers } from "../lib/api.server";
 export const { clientLoader, shouldRevalidate } = pageReuse<typeof loader>();
 
 /** Selected items of a topic: shared caches keep the page as long as its api answer (one minute). */
 export async function loader({ params, request }: Route.LoaderArgs) {
+  if (/[\u0000-\u001f\u007f]/.test(params.slug)) throw new Response("Not found", { status: 404 });
   const page = params.page ? Number(params.page) : 1;
   if (params.page !== undefined && (!/^\d+$/.test(params.page) || page < 1)) throw new Response("Not found", { status: 404 });
   // Page 1 lives at the topic's own address (308).
-  if (params.page === "1") throw redirect(`/topics/${params.slug}`, 308);
+  if (params.page === "1") throw redirect(`/topics/${encodeURIComponent(params.slug)}`, 308);
   const data = await loadOr404<TopicPage>(`/api/site/topics/${encodeURIComponent(params.slug)}?page=${page}`, { signal: request.signal });
   return cachedPage(60, { data });
 }
@@ -58,7 +62,7 @@ export function meta({ loaderData }: Route.MetaArgs) {
   const parts = partsOf(data);
   const path = page > 1 ? `/topics/${topic.slug}/page/${page}` : `/topics/${topic.slug}`;
   const text = page > 1 ? `${topic.name}的精选归档第 ${page} 页。${topic.definition}` : description(data, parts);
-  const crumbs = breadcrumbLd([{ name: SITE.name, path: "/" }, { name: "主题", path: "/topics" }, { name: topic.name, path: `/topics/${topic.slug}` }]);
+  const crumbs = breadcrumbLd([{ name: SITE.name, path: "/" }, ...UP.crumbs, { name: topic.name, path: `/topics/${topic.slug}` }]);
   return pageMeta({
     title: page > 1
       ? `${topic.name} 精选 · 第 ${page} 页`
@@ -91,9 +95,9 @@ export default function TopicRoute() {
   const last = first + items.length - 1;
   return (
     <div className="pb-6">
-      <PhoneBar back={{ to: "/topics", label: "全部主题" }} title={topic.name} />
-      <Link to="/topics" className="hidden items-center gap-1.5 py-2 text-[13px] text-ink-3 transition-colors hover:text-accent lg:inline-flex">
-        <IconArrowLeft size={14} /> 返回全部主题
+      <PhoneBar back={{ to: UP.to, label: UP.back }} title={topic.name} />
+      <Link to={UP.to} className="hidden items-center gap-1.5 py-2 text-[13px] text-ink-3 transition-colors hover:text-accent lg:inline-flex">
+        <IconArrowLeft size={14} /> 返回{UP.back}
       </Link>
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 pb-5 pt-3 lg:pt-1">
         <div className="min-w-0 max-w-[760px]">

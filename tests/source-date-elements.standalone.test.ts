@@ -1,5 +1,5 @@
 // Real listing date labels can carry a Unix debugging tooltip, while detail rules can select a
-// metadata element. Neither should hide the date the configured element actually supplies.
+// metadata element. Unlabelled or modified times must not stand in for a publication date.
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, test } from "node:test";
@@ -8,7 +8,13 @@ import { fetchDetail, fromHtml } from "@aihot/backend/sources/web-list";
 
 const html = `<html><head><meta name="date" content="2026-09-11T19:58:33Z"></head><body>` +
   `<article><a href="/post">A real article</a><span title="Unix: 1789171113866">Sep 11, 2026</span></article></body></html>`;
-const server = http.createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end(html); });
+const server = http.createServer((req, res) => {
+  res.setHeader("content-type", "text/html");
+  if (req.url === "/modified") return res.end(`<meta property="article:modified_time" content="2026-10-14T00:00:00Z"><time itemprop="dateModified" datetime="2026-10-14T00:00:00Z">Updated today</time>`);
+  if (req.url === "/unlabelled") return res.end(`<time datetime="2026-10-14T00:00:00Z">2026-10-14</time>`);
+  if (req.url === "/published") return res.end(`<time itemprop="datePublished" datetime="2020-02-15T00:00:00Z">Published February 15, 2020</time>`);
+  res.end(html);
+});
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const previousPrivateFetch = config.allowPrivateNetworkFetch;
@@ -28,4 +34,15 @@ test("a detail date selector reads meta content and an invalid tooltip does not 
     const item = await fetchDetail(base + "/post", { config: { detail: { publishedAtSelector, publishedAtAuthoritative: true, publishedAtUtcOffset: "+00:00" } } } as never, { date: true, title: false, summary: false });
     assert.equal(item.publishedAt?.toISOString(), expected);
   }
+});
+
+// An article can put its update time first; only explicit publication metadata or a source rule is trusted.
+test("generic detail metadata does not promote modified or unlabelled time elements to publication", async () => {
+  const source = { config: { detail: { maxFetches: 1 } } } as never;
+  for (const path of ["/modified", "/unlabelled"]) {
+    const detail = await fetchDetail(base + path, source, { date: true, title: false, summary: false });
+    assert.equal(detail.publishedAt, null, path);
+  }
+  const published = await fetchDetail(base + "/published", source, { date: true, title: false, summary: false });
+  assert.equal(published.publishedAt?.toISOString(), "2020-02-15T00:00:00.000Z");
 });

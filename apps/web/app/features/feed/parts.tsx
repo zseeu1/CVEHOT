@@ -7,6 +7,9 @@ import { Lightbox } from "../../components/ui/Lightbox";
 import { toggleStar, useIsStarred } from "../../lib/local-state";
 
 /** The source's name, or, for X, avatar + display name + @handle. */
+/** The text colour of a report: grey once this browser has opened it, so the unread ones stand out. */
+export const readTone = (read: boolean, unread: string) => (read ? "text-ink-4" : unread);
+
 export function SourceLine({ item, className = "" }: { item: Pick<FeedItemSummary, "source" | "x" | "channel">; className?: string }) {
   if (item.channel === "x" && item.x) {
     return (

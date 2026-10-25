@@ -86,11 +86,11 @@ export function sanitizeBody(html: string, baseUrl?: string): string {
         attribs: { ...attribs, src: resolveUrl(attribs.src?.trim() || attribs["data-src"]?.trim() || "", baseUrl) },
       }),
     },
-    // Empty paragraphs go in normalizeBlocks, which sees nested images: a frame only knows its direct
-    // children, and a paragraph holding a linked chart (<p><a><img></a></p>) looked empty here.
+    // Empty paragraphs and links go in normalizeBlocks, which sees nested images: a frame only knows its
+    // direct children, so a paragraph holding a linked chart (<p><a><img></a></p>) and a link around a
+    // framed picture (<a><div><picture><img></picture></div></a>) looked empty here.
     exclusiveFilter: (frame) =>
-      (frame.tag === "img" && (!frame.attribs.src || isNonArticleImage(frame.attribs.src, frame.attribs.width, frame.attribs.height))) ||
-      (frame.tag === "a" && !frame.text.trim() && !frame.mediaChildren?.length),
+      frame.tag === "img" && (!frame.attribs.src || isNonArticleImage(frame.attribs.src, frame.attribs.width, frame.attribs.height)),
   });
   return normalizeBlocks(cleaned);
 }
@@ -99,15 +99,23 @@ const BLOCK_TAGS = new Set(["p", "h2", "h3", "h4", "h5", "ul", "ol", "li", "bloc
 
 /**
  * Re-parses the sanitised HTML the way browsers do: a block element closes an open paragraph, so
- * containers turned into <p> (nested divs) no longer leave nested or empty paragraphs behind. Empty
- * paragraphs are dropped and loose top-level text is wrapped in its own paragraph.
+ * containers turned into <p> (nested divs) no longer leave nested or empty paragraphs behind. Links
+ * and paragraphs with neither text nor media are dropped and loose top-level text is wrapped in its
+ * own paragraph.
  */
 export function normalizeBlocks(html: string): string {
   const $ = cheerio.load(html, null, false);
   normalizeVideos($);
-  $("p").each((_, el) => {
-    const p = $(el);
-    if (!p.text().trim() && !p.find("img, video, picture").length) p.remove();
+  for (const tag of ["a", "p"]) {
+    $(tag).each((_, el) => {
+      const node = $(el);
+      if (!node.text().trim() && !node.find("img, video, picture").length) node.remove();
+    });
+  }
+  // The frame around a linked picture (<a><div><picture>) became a paragraph, which Markdown cannot
+  // hold inside a link; paragraphs of text in a link stay.
+  $("a p").each((_, el) => {
+    if (!$(el).text().trim()) $(el).replaceWith($(el).contents());
   });
   const out: string[] = [];
   let run: string[] = [];
@@ -131,7 +139,7 @@ export function normalizeBlocks(html: string): string {
 }
 
 /**
- * Short blocks a news page puts after the article (TechCrunch ends in "Topics", "Subscribe for the
+ * Short blocks a news page puts after the article (one ends in "Topics", "Subscribe for the
  * industry's biggest tech news", "Latest in AI"). Only headings and calls to action without a full
  * stop, only at the very end of an extracted page, one block at a time: an article's own sentences stay.
  */

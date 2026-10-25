@@ -30,20 +30,17 @@ const article = (changes: Partial<AnalyzeInputArticle> = {}): AnalyzeInputArticl
 });
 const runFresh = (input: AnalyzeInputArticle) => runAnalysis(input, { attemptTag: tag() });
 
-test("title-only articles wait for evidence regardless of the prefilter label", async (t) => {
-  for (const candidate of ["PASS", "UNKNOWN", "BLOCK"]) await t.test(candidate, async () => {
-    label = candidate;
-    steps.length = 0;
-    const run = await runFresh(article({ bodyText: " \n", excerpt: " " }));
-    const out = normalizeAnalysis(run);
-    assert.deepEqual(steps, ["prefilter"]);
-    assert.equal(out.relevance, "unknown");
-    assert.equal(out.score, null);
-    assert.equal(out.selected, false);
-    assert.equal(out.titleZh, "");
-    assert.equal(out.summaryZh, "");
-    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh, summary: out.summaryZh }), false);
-  });
+test("title-only articles wait for evidence without a model call (no prefilter label could count)", async () => {
+  steps.length = 0;
+  const run = await runFresh(article({ bodyText: " \n", excerpt: " " }));
+  const out = normalizeAnalysis(run);
+  assert.deepEqual(steps, []);
+  assert.equal(out.relevance, "unknown");
+  assert.equal(out.score, null);
+  assert.equal(out.selected, false);
+  assert.equal(out.titleZh, "");
+  assert.equal(out.summaryZh, "");
+  assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh, summary: out.summaryZh }), false);
 });
 
 test("real body, feed excerpt and quoted text still receive a score and writing", async (t) => {

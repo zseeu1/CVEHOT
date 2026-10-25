@@ -26,12 +26,33 @@ interface ModelReport {
   cases?: CaseIn[];
 }
 
+const invalid = (message: string) => Object.assign(new Error(message), { statusCode: 400 });
+
 /** A report as scripts/eval-selection.ts writes it: { meta, models }. */
 export async function importSelectBenchRun(report: unknown, label: string, actor: string) {
   const r = report as { meta?: Record<string, unknown>; models?: Record<string, ModelReport> };
   const models = r.models ?? {};
   const names = Object.keys(models).filter((m) => models[m]?.summary);
-  if (!names.length) throw new Error("report has no model summaries");
+  if (!names.length) throw invalid("report has no model summaries");
+  // Reject invalid evidence before writing a run; the same case may appear once per model.
+  const goldByCase = new Map<string, string>();
+  for (const m of names) {
+    const cases = models[m]!.cases;
+    if (cases === undefined) continue;
+    if (!Array.isArray(cases)) throw invalid(`${m}: cases must be an array`);
+    const ids = new Set<string>();
+    for (const c of cases) {
+      if (!c || typeof c.caseId !== "string" || !c.caseId.trim()) throw invalid(`${m}: caseId must be a non-empty string`);
+      if (ids.has(c.caseId)) throw invalid(`${m}: duplicate caseId ${c.caseId}`);
+      ids.add(c.caseId);
+      if (!["select", "reject", "either"].includes(c.gold)) throw invalid(`${m}: ${c.caseId}: invalid gold decision`);
+      const previousGold = goldByCase.get(c.caseId);
+      if (previousGold !== undefined && previousGold !== c.gold) {
+        throw invalid(`${m}: ${c.caseId}: conflicting gold decision across models`);
+      }
+      goldByCase.set(c.caseId, c.gold);
+    }
+  }
   const meta = r.meta ?? {};
   const id = `sb-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex")}`;
   const summary = Object.fromEntries(names.map((m) => [m, { ...models[m]!.summary, sweep: models[m]!.sweep ?? [] }]));
@@ -80,7 +101,8 @@ export async function selectBenchRun(id: string, f: { model?: string; outcome?: 
   if (!run) return null;
   const outcome = f.outcome ?? null;
   // One row per case with every model's decision, so disagreements are visible side by side.
-  const rows = await sql<AdminSelectBenchCases["rows"]>`
+  const [rows, strata] = await Promise.all([
+    sql<AdminSelectBenchCases["rows"]>`
     SELECT case_id, min(title) AS title, min(stratum) AS stratum, min(gold) AS gold,
            jsonb_object_agg(model, jsonb_build_object('decision', decision, 'score', score, 'relevance', relevance, 'category', category, 'reason', reason, 'error', error, 'receiptId', receipt_id)) AS by_model
     FROM selectbench_results WHERE run_id = ${id} AND (${f.stratum ?? null}::text IS NULL OR stratum = ${f.stratum ?? null})
@@ -95,7 +117,8 @@ export async function selectBenchRun(id: string, f: { model?: string; outcome?: 
         WHEN 'error' THEN decision IS NULL
         ELSE true END))
       AND (${!!f.disagree} IS FALSE OR count(DISTINCT decision) > 1)
-    ORDER BY min(stratum), case_id LIMIT 400`;
-  const strata = await sql<AdminSelectBenchCases["strata"]>`SELECT stratum, count(DISTINCT case_id)::int AS n FROM selectbench_results WHERE run_id = ${id} GROUP BY 1 ORDER BY 2 DESC`;
+    ORDER BY min(stratum), case_id LIMIT 400`,
+    sql<AdminSelectBenchCases["strata"]>`SELECT stratum, count(DISTINCT case_id)::int AS n FROM selectbench_results WHERE run_id = ${id} GROUP BY 1 ORDER BY 2 DESC`,
+  ]);
   return { run, rows, strata };
 }

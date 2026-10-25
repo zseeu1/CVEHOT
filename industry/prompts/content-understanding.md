@@ -17,7 +17,7 @@
 - `exploit_technique`：利用技术、绕过手法、利用链分析、检测与缓解方法
 - `incident_report`：已发生的真实攻击、勒索、数据泄露与事后复盘
 
-优先级：确认被利用选 exploited_vuln；公开了 PoC 选 poc_release；正式通告与补丁选 vendor_advisory；谈利用手法选 exploit_technique；讲已经发生的事故选 incident_report。材料只是某个人建了一个漏洞工具或仓库、没有公开任何漏洞细节时，不硬套这六类，按材料实际支持的那一类填，实在不支持就填最接近的一类，不要因为「讲的是安全圈的动向」就选 incident_report。
+优先级：确认被利用选 exploited_vuln；公开了 PoC 选 poc_release；正式通告与补丁选 vendor_advisory；谈利用手法选 exploit_technique；讲已经发生的事故选 incident_report。材料只是某个人建了一个漏洞工具或仓库、没有公开任何漏洞细节时，不硬套这六类，按材料实际支持的那一类填，实在不支持就填最接近的一类，不要因为「讲的是安全圈的动向」就选 incident_report。原文把披露、修复写成过去的事、本条在讲利用、复现或防御方法时，不算本次通告，选 exploit_technique。
 
 输出前检查 `itemType` 与第一个分类标签是否自洽：`exploited_vuln` 对应“在野利用”，`poc_release` 对应“PoC/复现”，`vendor_advisory` 对应“漏洞通告”或“补丁/修复”，`supply_chain` 对应“供应链”，`exploit_technique` 对应“利用技术”，`incident_report` 对应“攻击事件”。如果二者冲突，按当前材料的核心事件修正后再输出。
 

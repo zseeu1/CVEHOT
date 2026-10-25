@@ -1,6 +1,7 @@
 // First-party site API (/api/site/*). Not a public API: it may evolve with the website,
 // but it is served from the same public read layer as v1, RSS and MCP.
 import type { CategoryKey, ChannelKey } from "./taxonomy.ts";
+import { isoWeekRange, monthDay } from "./time.ts";
 
 export interface SourceRef {
   /** The name readers see (publication/rules.ts publicSourceName), as is every source name here. */
@@ -63,7 +64,7 @@ export interface FeedItemSummary extends Pick<ItemSummary, "id" | "title" | "sum
   }) | null;
   /**
    * A selected report whose fact is represented by another report (全部动态 and search): that report,
-   * so the card can say "同一新闻，精选展示《…》" instead of claiming a seat of its own.
+   * so the card can say "同一件事，精选收录的是《…》" instead of claiming a seat of its own.
    */
   sameEvent?: { id: string; title: string } | null;
 }
@@ -74,6 +75,11 @@ export interface GroupInfo {
   additionalSourceCount: number;
   /** Distinct public reports of this fact. */
   reportCount: number;
+  /**
+   * The selected reports of this fact under the current filters. The timeline's reader-side unread
+   * filter keeps a group while any of them is unread; the timeline fills it, other callers omit it.
+   */
+  memberIds?: string[];
 }
 
 export interface TimelineCard {
@@ -131,7 +137,7 @@ export interface OutlineEntry {
 export interface SiteItemDetail extends ItemSummary {
   /** The post with all its media; its text is the body. */
   x: Omit<XPostView, "text" | "translation"> | null;
-  /** Selected, but its fact's seat is held by this report: marked 同新闻, without a reason of its own. */
+  /** Selected, but its fact's seat is held by this report: marked 同事件, without a reason of its own. */
   sameEvent?: { id: string; title: string } | null;
   readingMode: "full" | "summary-only";
   author: string | null;
@@ -148,7 +154,7 @@ export interface SiteItemDetail extends ItemSummary {
   bodyLanguage: "zh" | "original";
 }
 
-/** A fact's public reports under the list's filters: what "另有 N 家信源报道" opens. */
+/** A fact's public reports under the list's filters: what "另外 N 家也报道了" opens. */
 export interface GroupReport {
   id: string;
   title: string;
@@ -264,6 +270,17 @@ export interface StoryDetail {
 // Reports (daily / weekly / monthly)
 
 export type ReportKind = "daily" | "weekly" | "monthly";
+
+/** What each kind of report is called. */
+export const REPORT_NAMES: Record<ReportKind, string> = { daily: "日报", weekly: "周报", monthly: "月报" };
+
+/** An issue's date as Chinese readers write and search it: "10月17日", "10月12日—18日" (or "9月28日—10月4日"), "2026年10月". */
+export function reportDateLabel(kind: ReportKind, key: string): string {
+  if (kind === "daily") return monthDay(key);
+  if (kind === "monthly") return `${key.slice(0, 4)}年${Number(key.slice(5, 7))}月`;
+  const { start, end } = isoWeekRange(key)!;
+  return `${monthDay(start)}—${start.slice(5, 7) === end.slice(5, 7) ? `${Number(end.slice(8, 10))}日` : monthDay(end)}`;
+}
 
 export interface ReportCitation {
   itemId: string | null;

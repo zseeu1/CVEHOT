@@ -150,6 +150,7 @@ function registerTools(server: McpServer, say: typeof ok) {
     },
     safe(T.search, async (args) => {
       const q = args.q.trim();
+      if (q.includes("\0")) return fail("invalid_request", "搜索词不能包含 NUL 字符。");
       if ([...q].length < 2) return fail("invalid_request", "搜索词需要 2 到 200 个字符。");
       const found = await searchItems(q, args.window, args.category ?? null, args.limit, (query) => recent(`items:${JSON.stringify(query)}`, () => v1Items(query)));
       return say(searchAnswer(found, { q, window: args.window, category: args.category ?? null }), { schemaVersion: 1, query: found.res.query, items: found.res.items });

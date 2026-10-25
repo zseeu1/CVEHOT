@@ -1,8 +1,23 @@
-import { beijingDate, beijingTime, beijingWeekday } from "@aihot/contracts/time";
+import { beijingDate, beijingTime, beijingWeekday, monthDay as engineMonthDay } from "@aihot/contracts/time";
 
-/** "9月28日" of a calendar date (YYYY-MM-DD). */
-export function monthDay(date: string): string {
-  return `${Number(date.slice(5, 7))}月${Number(date.slice(8, 10))}日`;
+/**
+ * "9月28日" of a calendar date (YYYY-MM-DD). A day of another year than `now` (Beijing) carries its year, so an
+ * archived item is not read as this year's: "2019年2月19日". The engine's monthDay does this only when given today.
+ */
+export function monthDay(date: string, now: number = Date.now()): string {
+  return engineMonthDay(date, beijingDate(now));
+}
+
+/** A list cut into runs of the same Beijing day, in the list's own order. */
+export function byBeijingDay<T>(list: readonly T[], at: (entry: T) => string): Array<{ day: string; entries: T[] }> {
+  const days: Array<{ day: string; entries: T[] }> = [];
+  for (const entry of list) {
+    const day = beijingDate(at(entry));
+    const last = days.at(-1);
+    if (last?.day === day) last.entries.push(entry);
+    else days.push({ day, entries: [entry] });
+  }
+  return days;
 }
 
 /** "周六" of a calendar date (YYYY-MM-DD). */

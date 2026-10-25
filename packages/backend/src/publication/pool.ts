@@ -57,6 +57,10 @@ export async function withSearchCapacity<T>(fn: (db: Db) => Promise<T>): Promise
 export function searchTerms(q: string): string[] {
   return q
     .toLowerCase()
+    // "多模态RAG" means 多模态 and rag: split where Han meets a Latin word. Digits alone stay attached,
+    // so "10月" is still one term rather than 10 and 月.
+    .replace(/(\p{Script=Han})(?=[a-z])/gu, "$1 ")
+    .replace(/([a-z][a-z0-9]*)(?=\p{Script=Han})/gu, "$1 ")
     .split(/\s+/)
     .map((t) => t.trim())
     .filter(Boolean)
@@ -90,13 +94,19 @@ function queryEntityTag(q: string): string | null {
  * body whose full text may be shown, as the API documents it ("title / Chinese title / Chinese summary
  * / body"). Results stay in time order.
  */
+/** A plain Latin or digit term must start a word in the body: "rag" is not inside "storage". */
+function bodyMatch(t: string) {
+  const like = sql`ps.body LIKE ${"%" + t + "%"}`;
+  return /^[a-z0-9]+$/.test(t) ? sql`${like} AND ps.body ~ ${"(^|[^a-z0-9])" + t}` : like;
+}
+
 export function publicMatchCondition(terms: string[]) {
   if (terms.length === 0) return sql``;
   // Keep the body lookup correlated to the time-ordered candidates. Without OFFSET 0, PostgreSQL
   // may hash every matching body in pool_search before serving even the first 40 recent items.
   return terms.reduce(
     (acc, t) => sql`${acc} AND (p.search_text LIKE ${"%" + t + "%"} OR EXISTS (
-      SELECT 1 FROM pool_search ps WHERE ps.article_id = p.article_id AND ps.body LIKE ${"%" + t + "%"} OFFSET 0))`,
+      SELECT 1 FROM pool_search ps WHERE ps.article_id = p.article_id AND ${bodyMatch(t)} OFFSET 0))`,
     sql``,
   );
 }
@@ -175,25 +185,27 @@ async function queryPool(query: PoolQuery, now: Date): Promise<PoolResponse> {
         FULL JOIN (SELECT article_id FROM pool_search WHERE body LIKE ${"%" + terms[0]! + "%"}) b ON b.article_id = d.article_id`
         : sql`SELECT ps.article_id, (${partScore}) AS part FROM pool_search ps WHERE ${anyMatch}`;
       type RankedRow = Omit<ItemRow, "id"> & { id: string | null; rel: number; total: number };
+      // Equal relevance: a seated selected item first, then the higher quality score, then the newest.
+      const tie = sql`(CASE WHEN p.selected AND p.seat THEN 1000 ELSE 0 END) + coalesce(p.score, 0)`;
       // A query naming a company also takes the articles about it, ranked first.
       const scored = entityTag ? sql`
-          SELECT p.article_id, p.timeline_at, max(matches.part) + (${titleScore}) + (CASE WHEN p.tags @> ${[entityTag]}::text[] THEN 10 ELSE 0 END) AS rel
+          SELECT p.article_id, p.timeline_at, max(matches.part) + (${titleScore}) + (CASE WHEN p.tags @> ${[entityTag]}::text[] THEN 10 ELSE 0 END) AS rel, ${tie} AS tie
           FROM (SELECT article_id, part FROM matches UNION ALL SELECT article_id, 0 FROM publications WHERE tags @> ${[entityTag]}::text[]) matches
           JOIN publications p ON p.article_id = matches.article_id
           WHERE ${listedCondition(now)} ${filters}
-          GROUP BY p.article_id, p.timeline_at, p.title, p.tags` : sql`
-          SELECT p.article_id, p.timeline_at, matches.part + (${titleScore}) AS rel
+          GROUP BY p.article_id, p.timeline_at, p.title, p.tags, p.selected, p.seat, p.score` : sql`
+          SELECT p.article_id, p.timeline_at, matches.part + (${titleScore}) AS rel, ${tie} AS tie
           FROM matches JOIN publications p ON p.article_id = matches.article_id JOIN sources s ON s.id = p.source_id
           WHERE ${listedCondition(now)} ${filters}`;
       const result = await db<RankedRow[]>`
         WITH matches AS ${splitFields ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (${matches}), scored AS MATERIALIZED (${scored}
         ), page AS MATERIALIZED (
-          SELECT article_id, rel FROM scored ORDER BY rel DESC, timeline_at DESC, article_id DESC
+          SELECT article_id, rel, tie FROM scored ORDER BY rel DESC, tie DESC, timeline_at DESC, article_id DESC
           LIMIT ${POOL_PAGE_SIZE} OFFSET ${offset}
         ), total AS (SELECT count(*) AS n FROM (SELECT 1 FROM scored LIMIT ${cap}) capped)
         SELECT hydrated.*, total.n AS total FROM total LEFT JOIN LATERAL (
-          SELECT ${ITEM_COLUMNS}, page.rel ${ITEM_FROM} JOIN page ON page.article_id = p.article_id
-        ) hydrated ON true ORDER BY hydrated.rel DESC, hydrated.timeline_at DESC, hydrated.id DESC`;
+          SELECT ${ITEM_COLUMNS}, page.rel, page.tie ${ITEM_FROM} JOIN page ON page.article_id = p.article_id
+        ) hydrated ON true ORDER BY hydrated.rel DESC, hydrated.tie DESC, hydrated.timeline_at DESC, hydrated.id DESC`;
       const rows = result.filter((r): r is ItemRow & { rel: number; total: number } => r.id !== null);
       return { rows, total: Number(result[0]!.total) };
     }

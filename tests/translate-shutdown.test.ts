@@ -1,4 +1,4 @@
-import { gate, stub, tag } from './setup.ts';
+import { gate, Reply, stub, tag } from './setup.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
@@ -9,11 +9,12 @@ import { publishArticle } from '@aihot/backend/publication/publish';
 
 const T = tag();
 const SOURCE = `test-translate-stop-${T}`;
-let active: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>>; calls: number; misaligned: boolean };
+let active: { asked: ReturnType<typeof gate<void>>; hold: ReturnType<typeof gate<void>>; calls: number; misaligned: boolean; refused?: boolean };
 const provider = await stub(async (_hit, req) => {
   const { segments } = JSON.parse(JSON.parse(req.body).messages[1].content) as { segments: string[] };
   active.calls++;
   if (active.calls === 1) { active.asked.open(); await active.hold.promise; }
+  if (active.calls === 1 && active.refused) return new Reply(503, { error: 'temporarily overloaded' });
   const t = active.misaligned && segments.length === 2 ? [] : segments.map(() => `完整译文${T}`);
   return { id: 'stub', choices: [{ message: { content: JSON.stringify({ t }) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
 });
@@ -78,4 +79,21 @@ for (const misaligned of [false, true]) test(`SIGTERM finishes the sent ${misali
   const finished = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE purpose='translate_body' AND subject LIKE ${`article:${articleId}@1#%`}`;
   assert.ok(finished.length >= (misaligned ? 3 : 2));
   assert.ok(finished.every((receipt) => receipt.status === 'completed'), 'all batches covered by the committed translation complete after resume');
+});
+
+test('a batch the provider refuses after SIGTERM is an interruption, not a translation attempt', async () => {
+  active = { asked: gate(), hold: gate(), calls: 0, misaligned: false, refused: true };
+  const { articleId } = await upsertMaterial({ sourceId: SOURCE, url: `https://example.org/translation-shutdown-${T}/refused`, title: `Refused ${T}`, bodyHtml: `<p>Refused paragraph ${T}.</p><p>Another refused paragraph ${T}.</p>`, bodyText: `Refused paragraph ${T}. Another refused paragraph ${T}.`, bodyStatus: 'ok', language: 'en', via: 'fetch', publishedAt: new Date(), discoveredAt: new Date(Date.now() + 86_400_000) });
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,category,title_zh,summary_zh,reason_zh,score,selected)
+    VALUES (${articleId},1,'rule','pass','ai-models',${`拒绝测试${T}`},'摘要','理由',90,true)`;
+  await publishArticle(articleId, { releasedAt: new Date(Date.now() - 60_000) });
+  const interrupted = runTranslation();
+  await Promise.race([active.asked.promise, interrupted.done.then((r) => assert.fail(`translation ended before a request: ${JSON.stringify(r)}`))]);
+  interrupted.child.kill('SIGTERM');
+  await interrupted.stopped;
+  active.hold.open();
+  assert.deepEqual(await interrupted.done, { done: [], quotes: 0 }, 'the run returns normally without reporting the interrupted article');
+  assert.equal(active.calls, 1);
+  assert.equal((await sql`SELECT 1 FROM translation_attempts WHERE article_id=${articleId}`).length, 0, 'the stop consumes no translation attempt');
+  assert.equal((await sql`SELECT 1 FROM translations WHERE article_id=${articleId}`).length, 0);
 });

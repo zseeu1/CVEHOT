@@ -29,7 +29,8 @@ export async function fetchListing(input: string, opts: GuardedFetchOptions = {}
   for (let attempt = 0; ; attempt++) {
     const canRetry = () => repeatable && attempt === 0 && deadline - Date.now() > RETRY_DELAY_MS;
     try {
-      const res = await guardedFetch(input, { ...opts, timeoutMs: Math.max(1, deadline - Date.now()) });
+      // Listing addresses come from the source configuration, so a listed private feed host may serve them.
+      const res = await guardedFetch(input, { ...opts, privateFeedHost: true, timeoutMs: Math.max(1, deadline - Date.now()) });
       if (!canRetry() || !transientResponse(input, res)) return res;
     } catch (error) {
       if (!canRetry() || !transientTransport(error)) throw error;

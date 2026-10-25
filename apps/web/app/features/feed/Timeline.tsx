@@ -1,16 +1,18 @@
-// The day-grouped feed (精选 home, topics): a time rail with cards on desktop, rows under grey day bars on
-// phones. Keeps its place across back navigation and loads further pages. There is no "new items"
-// prompt: readers refresh for the latest head — on phones also by tapping the tab again.
+// The 精选 home's day-grouped feed: a time rail with cards on desktop, rows under grey day bars on phones.
+// Keeps its place across back navigation and loads further pages. There is no "new items" prompt:
+// readers refresh for the latest head — on phones also by tapping the tab again. The paged lists
+// (DayList) share its day header and slot.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigation } from "react-router";
 import { Collapse } from "../../components/ui/Presence";
+import { ToggleChip } from "../../components/ui/Controls";
 import type { TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
 import { FeedItem } from "./FeedItem";
 import { IconChevronDown } from "../../components/icons";
 import { RingMark } from "@aihot/site/brand/Logo.tsx";
 import { EmptyState } from "../../components/ui/Page";
-import { beijingDate, beijingTime, beijingWeekday } from "@aihot/contracts/time";
-import { monthDay, weekdayShort } from "../../lib/format";
+import { beijingDate, beijingTime, beijingWeekday, monthDay } from "@aihot/contracts/time";
+import { byBeijingDay, weekdayShort } from "../../lib/format";
 import { isHydrated } from "../../lib/hydration";
 import { markRead, useReadSet } from "../../lib/local-state";
 import { filterParams, listPath } from "../../lib/seo";
@@ -25,15 +27,21 @@ interface ListState {
   dayCounts: Record<string, number>;
   collapsed: string[];
   batches: number;
+  /** The reader's unread-only filter: off by default, and kept when the same list is rebuilt. */
+  unreadOnly: boolean;
 }
 
-function fromResponse(r: TimelineResponse): ListState {
-  return { version: 2, cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1 };
+function fromResponse(r: TimelineResponse, unreadOnly = false): ListState {
+  return { version: 2, cards: r.cards, nextCursor: r.nextCursor, dayCounts: r.dayCounts, collapsed: [], batches: 1, unreadOnly };
 }
 
-/** Sticky day header under the phone bar: a quiet row on desktop, a grey full-width bar on phones. */
-export function DayHeader({ day, today, count, collapsed, onToggle, aside }: { day: string; today: string; count: number | null; collapsed?: boolean; onToggle?: () => void; aside?: React.ReactNode }) {
-  const date = monthDay(day);
+/**
+ * Sticky day header under the phone bar: a quiet row on desktop, a grey full-width bar on phones. `aside`
+ * ends the row; on phones it sits beside the count unless `asideOnPhone` is false (a control: there the
+ * whole bar is the fold button).
+ */
+export function DayHeader({ day, today, count, collapsed, onToggle, aside, asideOnPhone = true }: { day: string; today: string; count: number | null; collapsed?: boolean; onToggle?: () => void; aside?: React.ReactNode; asideOnPhone?: boolean }) {
+  const date = monthDay(day, today);
   const weekday = beijingWeekday(day);
   const short = weekdayShort(day);
   const phoneRow = (
@@ -42,7 +50,7 @@ export function DayHeader({ day, today, count, collapsed, onToggle, aside }: { d
       {day === today && <span className="text-[12.5px] text-ink-4">{date}</span>}
       <span className="text-[12.5px] text-ink-4">{short}</span>
       <span className="ml-auto flex items-center gap-1 text-[12.5px] text-ink-4">
-        {aside}
+        {asideOnPhone && aside}
         {count !== null && (
           <span>
             <span className="num">{count}</span> 条
@@ -164,7 +172,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         setState(snap.data);
         restoreAnchor(snap.anchor, snap.scrollY);
       } else {
-        setState(fromResponse(initial));
+        setState(fromResponse(initial, stateRef.current.unreadOnly));
       }
     }
   }, [filterKey, initial, historyKey]);
@@ -180,7 +188,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
     pageRequest.current = null;
     setLoadingMore(false);
     setLoadError(false);
-    setState(fromResponse(initial));
+    setState(fromResponse(initial, stateRef.current.unreadOnly));
   }, [initial, filterKey]);
 
   useLayoutEffect(() => {
@@ -222,7 +230,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
         // Cursor no longer fits: start over from the head.
         const head = await fetch(key, { signal: controller.signal });
         if (!head.ok) throw new Error(String(head.status));
-        if (current()) setState(fromResponse((await head.json()) as TimelineResponse));
+        if (current()) setState(fromResponse((await head.json()) as TimelineResponse, stateRef.current.unreadOnly));
         return;
       }
       if (!res.ok) throw new Error(String(res.status));
@@ -263,35 +271,64 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
   }, [state.nextCursor, state.batches, loadMore]);
 
   const today = beijingDate(Date.now());
-  const days = useMemo(() => {
-    const out: Array<{ day: string; cards: TimelineCard[] }> = [];
-    for (const c of state.cards) {
-      const d = beijingDate(c.anchorAt);
-      const last = out[out.length - 1];
-      if (last && last.day === d) last.cards.push(c);
-      else out.push({ day: d, cards: [c] });
-    }
-    return out;
-  }, [state.cards]);
+  const unreadOnly = state.unreadOnly;
+  // 只看未读 hides cards read in this browser: an ordinary card by its own id, a reading group by any
+  // of its selected reports, so a read representative does not hide the unread reports behind it.
+  // A group kept that way is not drawn as read; its expansion marks which reports are unread.
+  const unreadVisible = useCallback(
+    (card: TimelineCard) => !readSet.has(card.item.id) || (card.group?.memberIds?.some((id) => !readSet.has(id)) ?? false),
+    [readSet],
+  );
+  const days = useMemo(
+    () => byBeijingDay(unreadOnly ? state.cards.filter(unreadVisible) : state.cards, (c) => c.anchorAt),
+    [state.cards, unreadOnly, unreadVisible],
+  );
+
+  const visibleCount = useMemo(() => days.reduce((n, d) => n + d.entries.length, 0), [days]);
+  // With the filter on, a page whose cards are all read would show nothing: keep paging until
+  // something is visible. It stops at the list's own automatic bound and leaves the rest to the
+  // button, so loading keeps a clear edge and a manual way to continue.
+  useEffect(() => {
+    if (!unreadOnly || visibleCount > 0 || loadingMore || loadError) return;
+    if (!state.nextCursor || state.batches >= AUTO_BATCHES) return;
+    void loadMore();
+  }, [unreadOnly, visibleCount, loadingMore, loadError, state.nextCursor, state.batches, loadMore]);
 
   const toggleDay = (day: string) =>
     setState((s) => ({ ...s, collapsed: s.collapsed.includes(day) ? s.collapsed.filter((d) => d !== day) : [...s.collapsed, day] }));
 
   let order = 0;
+  const unreadToggle = (
+    <ToggleChip on={unreadOnly} onToggle={() => setState((s) => ({ ...s, unreadOnly: !s.unreadOnly }))}>
+      只看未读
+    </ToggleChip>
+  );
   return (
     <div className="relative">
-      {days.length === 0 && (
+      {/* Desktop puts it on the first date row; phones, and a list the filter left empty, keep its own row. */}
+      <div className={`mb-2 flex justify-end ${days.length ? "lg:hidden" : ""}`}>{unreadToggle}</div>
+
+      {days.length === 0 && !loadingMore && (
         <div className="lg:card">
-          <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>
+          {unreadOnly ? (
+            state.nextCursor ? (
+              <EmptyState title="这批精选都读过了">点下方的按钮，继续找更早的未读精选。</EmptyState>
+            ) : (
+              <EmptyState title="没有未读的精选内容">关掉「只看未读」可以看到全部内容。</EmptyState>
+            )
+          ) : (
+            <EmptyState title="这个筛选下还没有精选内容">换个类别看看，或者去全部动态里找找。</EmptyState>
+          )}
         </div>
       )}
 
-      {days.map(({ day, cards }) => {
+      {days.map(({ day, entries: cards }, dayIndex) => {
         const collapsed = state.collapsed.includes(day);
-        const count = state.dayCounts[day] ?? cards.length;
+        // The server counts whole days; with the filter on, only the visible cards count.
+        const count = unreadOnly ? cards.length : (state.dayCounts[day] ?? cards.length);
         return (
           <section key={day} aria-label={day} className="lg:mb-1">
-            <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} />
+            <DayHeader day={day} today={today} count={count} collapsed={collapsed} onToggle={() => toggleDay(day)} aside={dayIndex === 0 ? unreadToggle : undefined} asideOnPhone={false} />
             <Collapse open={!collapsed}>
                 <ol className="lg:pt-1">
                   {cards.map((c) => {
@@ -299,7 +336,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
                     const delay = fresh ? Math.min(order++, 10) * 40 : 0;
                     return (
                       <TimelineSlot key={c.key} dataKey={c.key} at={c.anchorAt} fresh={fresh} delay={delay}>
-                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id)} onOpen={markRead} at={c.anchorAt} />
+                        <FeedItem item={c.item} group={c.group} filters={filters} read={readSet.has(c.item.id) && !(unreadOnly && unreadVisible(c))} onOpen={markRead} at={c.anchorAt} />
                       </TimelineSlot>
                     );
                   })}
@@ -310,7 +347,7 @@ export function Timeline({ initial, filters }: { initial: TimelineResponse; filt
       })}
 
       <div ref={sentinel} aria-hidden="true" />
-      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={state.batches >= AUTO_BATCHES} empty={state.cards.length === 0} onMore={loadMore} />
+      <FeedEnd loading={loadingMore} error={loadError} hasMore={!!state.nextCursor} manual={state.batches >= AUTO_BATCHES} empty={visibleCount === 0} onMore={loadMore} />
     </div>
   );
 }

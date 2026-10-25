@@ -22,7 +22,7 @@ const TONE: Record<string, "accent" | "warn" | "ok" | "muted"> = { new: "accent"
 function FeedbackCard({ f }: { f: AdminFeedbackRow }) {
   const { run, pending } = useAdminAction();
   const [note, setNote] = useState(f.note ?? "");
-  const [dialog, setDialog] = useState<null | "ban" | "erase">(null);
+  const [dialog, setDialog] = useState<null | "ban" | "email-ban" | "erase">(null);
   const base = `/api/admin/feedback/${f.id}`;
   const version = new Date(f.updated_at).toISOString();
   return (
@@ -35,6 +35,7 @@ function FeedbackCard({ f }: { f: AdminFeedbackRow }) {
         {f.page_url && <a className="max-w-[320px] truncate hover:text-accent" href={f.page_url} target="_blank" rel="noreferrer">{f.page_url}</a>}
         {f.from_source > 1 && <Badge tone="info" title="同一来源（IP 与浏览器家族的不可逆标识）">同来源 {f.from_source} 条</Badge>}
         {f.banned && <Badge tone="bad">来源已封禁</Badge>}
+        {f.email_banned && <Badge tone="bad">邮箱已临时封禁</Badge>}
         {!f.forwarded_at && f.status === "new" && (
           <Badge tone="warn" title={f.forward_error && f.forward_error !== "pending" ? `还没有转发到内部飞书群：${f.forward_error}` : "还没有转发到内部飞书群"}>未转发</Badge>
         )}
@@ -57,11 +58,12 @@ function FeedbackCard({ f }: { f: AdminFeedbackRow }) {
           {Object.entries(FEEDBACK_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </Select>
         <Textarea rows={1} className="!min-h-[38px]" placeholder="处理备注（仅内部可见）" value={note} onChange={(e) => setNote(e.target.value)} />
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           <Button size="md" disabled={note === (f.note ?? "")} busy={pending === "note"} onClick={() => run("PATCH", base, { note: note || null, version }, { label: "note", success: "备注已保存" })}>
             保存备注
           </Button>
           <Button tone="ghost" onClick={() => setDialog(f.banned ? null : "ban")} disabled={f.banned} title="拒绝这个来源的后续反馈">封禁来源</Button>
+          {f.email && <Button tone="ghost" onClick={() => setDialog("email-ban")} disabled={f.email_banned} title="拒绝填写这个邮箱的反馈，48 小时后自动解除">临时封禁邮箱</Button>}
           <Button tone="ghost" onClick={() => setDialog("erase")} title="按隐私说明删除提交者的资料">删除资料</Button>
         </div>
       </div>
@@ -73,6 +75,15 @@ function FeedbackCard({ f }: { f: AdminFeedbackRow }) {
         confirmLabel="封禁"
         onClose={() => setDialog(null)}
         onSubmit={async (reason) => (await run("POST", "/api/admin/feedback-bans", { sourceHash: f.source_hash, reason }, { label: "ban", success: "已封禁" })) !== null}
+      />
+      <ReasonDialog
+        open={dialog === "email-ban"}
+        title="临时封禁这个反馈邮箱"
+        description="填写这个邮箱的反馈将暂停 48 小时，换网络或浏览器也生效。邮箱未经验证，请只在确认持续滥用后使用；不会连带封禁其他邮箱或访问网页。"
+        danger
+        confirmLabel="封禁 48 小时"
+        onClose={() => setDialog(null)}
+        onSubmit={async (reason) => (await run("POST", "/api/admin/feedback-bans", { feedbackId: f.id, reason }, { label: "email-ban", success: "邮箱已临时封禁 48 小时" })) !== null}
       />
       <ReasonDialog
         open={dialog === "erase"}
@@ -109,12 +120,13 @@ export default function FeedbackAdmin({ loaderData }: Route.ComponentProps) {
       </div>
       <Pager page={page} hasMore={rows.length === 50} />
       {bans.length > 0 && (
-        <Card className="mt-8" title="已封禁的来源">
+        <Card className="mt-8" title="反馈封禁">
           <ul className="space-y-2 text-[13px]">
             {bans.map((b) => (
               <li key={b.source_hash} className="flex flex-wrap items-center justify-between gap-2">
                 <span>
-                  <span className="font-mono text-[12px] text-ink-3">{b.source_hash}</span> · {b.reason} · {b.created_by} · {bj(b.created_at, true)}
+                  {b.source_hash.startsWith("email:") ? "邮箱" : "来源"} · <span className="break-all font-mono text-[12px] text-ink-3">{b.source_hash}</span> · {b.reason} · {b.created_by} · {bj(b.created_at, true)}
+                  {b.expires_at && <span> · {bj(b.expires_at, true)} 自动解除</span>}
                 </span>
                 <Button size="sm" tone="ghost" onClick={() => run("DELETE", `/api/admin/feedback-bans/${encodeURIComponent(b.source_hash)}`, undefined, { label: `unban-${b.source_hash}`, success: "已解除封禁" })}>
                   解除

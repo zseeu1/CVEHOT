@@ -4,11 +4,11 @@
 import type { SourceRow } from "./types.ts";
 
 // Rules applied in collect.ts to every kind read through collectSource.
-const PUBLISHER = ["publisherRole", "publisherUrlPrefixes"];
-const COLLECTED = [...PUBLISHER, "_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "publishedAfter"];
+const PUBLISHER = ["publisherRole", "publisherUrlPrefixes", "publisherRequiresDiscovery"];
+const COLLECTED = [...PUBLISHER, "_aihot", "allowUrlPrefixes", "denyUrlPrefixes", "ingestNoiseFilter", "itemUrlPrefixRewrite", "sortByPublishedAt", "detail", "fetchPublicContent", "publishedAfter", "acceptLanguage"];
 
 const KEYS: Record<SourceRow["kind"], string[]> = {
-  rss: [...COLLECTED, "feedUrl", "summaryIsBody", "preserveUrlFragment", "allowCategories", "denyCategories"],
+  rss: [...COLLECTED, "feedUrl", "summaryIsBody", "preserveUrlFragment", "allowCategories", "denyCategories", "publishedAtUtcOffset"],
   web_list: [
     ...COLLECTED, "url", "baseUrl", "parseMode", "adapter", "cacheToleranceSeconds", "linksStartLine", "preserveUrlFragment",
     "itemSelector", "linkSelector", "titleSelector", "publishedAtSelector", "publishedAtRegex", "publishedAtUtcOffset",
@@ -33,15 +33,27 @@ const NESTED: Record<string, string[]> = {
   minNumeric: ["path", "min"],
   detail: [
     "maxFetches", "publishedAtSelector", "publishedAtRegex", "publishedAtUtcOffset", "publishedAtAuthoritative", "upgradeDatePrecision",
-    "titleSelector", "titleRegex", "titleAuthoritative", "summarySelector",
+    "titleSelector", "titleRegex", "titleAuthoritative", "summarySelector", "preserve",
   ],
 };
+
+/** Article widgets to preserve (PreserveRule in content/extract.ts): { selector, as: "pre" | "table" }, a code block's `code` and `caption` parts. */
+const preserveRules = (value: unknown) => Array.isArray(value) && value.every((rule) => {
+  if (!rule || typeof rule !== "object") return false;
+  const selector = (key: string) => typeof rule[key] === "string" && rule[key].trim() !== "";
+  const parts = rule.as === "pre" ? ["code", "caption"] : rule.as === "table" ? [] : null;
+  return parts !== null && selector("selector") && Object.keys(rule).every((key) => key === "selector" || key === "as" || parts.includes(key) && selector(key));
+});
 
 const VALUES: Record<string, string[]> = {
   publisherRole: ["organization", "person"],
   adapter: ["mimo_home"],
   parseMode: ["html", "markdown", "docusaurus_changelog", "intercom_changelog"],
 };
+
+// An Accept-Language value: language ranges with optional weights, e.g. "en-US,en;q=0.9".
+const LANGUAGE_RANGE = String.raw`(?:[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*|\*)(?:;q=(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?))?`;
+const ACCEPT_LANGUAGE = new RegExp(`^${LANGUAGE_RANGE}(?: *, *${LANGUAGE_RANGE})*$`);
 
 function utcInstant(value: unknown): boolean {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return false;
@@ -55,7 +67,10 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
   const out: string[] = [];
   for (const [key, value] of Object.entries(config ?? {})) {
     if (!allowed.has(key)) out.push(key);
+    else if (key === "publisherRequiresDiscovery" && (typeof value !== "boolean"
+      || value && (!Array.isArray(config.publisherUrlPrefixes) || config.publisherUrlPrefixes.length === 0))) out.push(key);
     else if (key === "publishedAfter" && !utcInstant(value)) out.push(key);
+    else if (key === "acceptLanguage" && (typeof value !== "string" || !ACCEPT_LANGUAGE.test(value))) out.push(key);
     else if (key === "publisherUrlPrefixes" && (!Array.isArray(value) || !value.every((v) => {
       if (typeof v !== "string") return false;
       try { const u = new URL(v); return /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; }
@@ -63,6 +78,7 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
     else if (VALUES[key] && !VALUES[key]!.includes(String(value))) out.push(`${key}=${String(value)}`);
     else if (NESTED[key] && value && typeof value === "object") {
       for (const sub of Object.keys(value)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
+      if (key === "detail" && "preserve" in value && !preserveRules((value as { preserve: unknown }).preserve)) out.push("detail.preserve");
     }
   }
   return out;

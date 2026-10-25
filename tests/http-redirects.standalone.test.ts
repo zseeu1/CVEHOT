@@ -70,6 +70,11 @@ test("ordinary public headers allow a different-origin redirect", async () => {
   assert.equal(result.url, b.url + "/public");
   assert.equal(b.hits.at(-1)!.method, "GET");
 });
+test("a caller's header replaces the default whatever the case of its name", async () => {
+  await guardedFetch(a.url + "/caller-headers", { headers: { "User-Agent": "fixture-agent/1.0", "ACCEPT-LANGUAGE": "en" } });
+  assert.equal(a.hits.at(-1)!.headers["user-agent"], "fixture-agent/1.0");
+  assert.equal(a.hits.at(-1)!.headers["accept-language"], "en");
+});
 for (const status of [301, 302, 303, 307, 308]) {
   for (const method of ["POST", "PUT", "GET", "HEAD"]) {
     test(`same-origin ${status} preserves expected ${method} semantics`, async () => {
@@ -128,6 +133,9 @@ test("one deadline and response byte limit remain effective", async () => {
   await assert.rejects(guardedFetch(a.url + "/slow", { timeoutMs: 100, maxRedirects: 9 }), { name: "TimeoutError" });
   a.routes.set("/large", (_hit, res) => { res.end("x".repeat(1000)); });
   await assert.rejects(guardedFetch(a.url + "/large", { maxBytes: 100 }), /too large/i);
+  const head = await guardedFetch(a.url + "/large", { maxBytes: 100, truncate: true });
+  assert.deepEqual([head.text(), head.truncated], ["x".repeat(100), true]);
+  assert.equal((await guardedFetch(a.url + "/large", { maxBytes: 1000, truncate: true })).truncated, false);
 });
 test("normal private-network guards still refuse direct and redirect destinations", async () => {
   config.allowPrivateNetworkFetch = false;

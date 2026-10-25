@@ -6,6 +6,8 @@ import { Sheet } from "../../components/ui/Sheet";
 import type { GroupInfo, GroupReport, GroupReportsResponse, TimelineFilters } from "@aihot/contracts/site";
 import { IconArrowUpRight, IconChevronDown, IconChevronRight } from "../../components/icons";
 import { monthDayTime } from "../../lib/format";
+import { useReadSet } from "../../lib/local-state";
+import { readTone } from "./parts";
 import { isReload } from "../../lib/restore";
 import { listPath, filterParams } from "../../lib/seo";
 import { sessionCache } from "../../lib/session-cache";
@@ -13,7 +15,7 @@ import { sessionCache } from "../../lib/session-cache";
 const reportsUrl = (factId: string, filters: TimelineFilters | undefined) =>
   listPath(`/api/site/groups/${encodeURIComponent(factId)}/reports`, filters ? filterParams(filters) : {});
 
-const labelOf = (group: GroupInfo) => (group.additionalSourceCount > 0 ? `另有 ${group.additionalSourceCount} 家信源报道` : `${group.reportCount} 篇报道`);
+const labelOf = (group: GroupInfo) => (group.additionalSourceCount > 0 ? `另外 ${group.additionalSourceCount} 家也报道了` : `${group.reportCount} 篇报道`);
 
 // The groups left open in each history entry, with what they showed (null: still loading): back from an
 // item finds them open again. In memory for back within the app; in session storage for a page the
@@ -78,7 +80,7 @@ function Toggle({ open, onToggle, children }: { open: boolean; onToggle: () => v
 function Panel({ open, children }: { open: boolean; children: ReactNode }) {
   return (
     <Collapse open={open} className="relative z-10">
-      <div className="mt-2 rounded-control bg-bg-sunk px-3 py-2 dark:bg-bg-muted/60">{children}</div>
+      <div className="mt-2 rounded-control bg-well px-3 py-2">{children}</div>
     </Collapse>
   );
 }
@@ -89,7 +91,7 @@ function LoadState({ loading, error, onRetry, empty }: { loading: boolean; error
   return null;
 }
 
-/** "另有 N 家信源报道": the other reports of the fact the card stands for, behind a toggle. */
+/** "另外 N 家也报道了": the other reports of the fact the card stands for, behind a toggle. */
 export function GroupSources({ group, filters, parentId }: { group: GroupInfo; filters?: TimelineFilters; parentId: string }) {
   const entry = useLocation().key;
   const key = `${group.factId}|${parentId}`;
@@ -112,6 +114,7 @@ export function GroupSources({ group, filters, parentId }: { group: GroupInfo; f
     remember(entry, key, open ? reports.reports : undefined);
   }, [entry, key, open, reports.reports]);
   const others = (reports.reports ?? []).filter((r) => r.id !== parentId);
+  const read = useReadSet();
   return (
     <div>
       <Toggle
@@ -128,7 +131,7 @@ export function GroupSources({ group, filters, parentId }: { group: GroupInfo; f
           {others.map((r) => (
             <li key={r.id} className="flex items-baseline gap-2 py-1.5 text-[13px]">
               <span className="w-[108px] shrink-0 truncate text-ink-4">{r.source.name}</span>
-              <Link viewTransition to={`/items/${r.id}`} className="min-w-0 flex-1 truncate text-ink-2 hover:text-accent">
+              <Link viewTransition to={`/items/${r.id}`} className={`min-w-0 flex-1 truncate hover:text-accent ${readTone(read.has(r.id), "text-ink-2")}`}>
                 {r.title}
               </Link>
               <a href={r.originalUrl} target="_blank" rel="noopener noreferrer" aria-label="打开原文" className="shrink-0 text-ink-4 hover:text-accent">
@@ -159,7 +162,7 @@ export function GroupButton({ group, filters, parentId }: { group: GroupInfo; fi
         }}
         aria-expanded={open}
         aria-haspopup="dialog"
-        className="relative z-10 mt-2 flex min-h-11 w-full items-center justify-between rounded-tile bg-bg-sunk px-3 py-2 text-left text-[12.5px] text-ink-4 transition-colors active:bg-bg-muted lg:hidden dark:bg-bg-muted/60 dark:active:bg-bg-muted"
+        className="relative z-10 mt-2 flex min-h-11 w-full items-center justify-between rounded-tile bg-well px-3 py-2 text-left text-[12.5px] text-ink-4 transition-colors active:bg-bg-muted lg:hidden"
       >
         {labelOf(group)}
         <IconChevronRight size={14} />
@@ -181,8 +184,9 @@ function GroupSheet({ open, onClose, group, filters, parentId }: {
     if (open && !reports.reports && !reports.loading && !reports.error) void reports.load();
   }, [open]);
   const others = (reports.reports ?? []).filter((r) => r.id !== parentId);
+  const read = useReadSet();
   return (
-    <Sheet open={open} onClose={onClose} title="同一新闻的其他报道">
+    <Sheet open={open} onClose={onClose} title="这件事的其他报道">
       <div className="px-5">
         <ul className="divide-y divide-line-soft">
           {others.map((r) => (
@@ -191,7 +195,7 @@ function GroupSheet({ open, onClose, group, filters, parentId }: {
                 <span className="block text-[12.5px] text-ink-4">
                   {r.source.name} · <span className="num">{monthDayTime(r.timelineAt)}</span>
                 </span>
-                <span className="mt-0.5 line-clamp-2 text-[15px] leading-[1.5] text-ink-2">{r.title}</span>
+                <span className={`mt-0.5 line-clamp-2 text-[15px] leading-[1.5] ${readTone(read.has(r.id), "text-ink-2")}`}>{r.title}</span>
               </Link>
               <a href={r.originalUrl} target="_blank" rel="noopener noreferrer" aria-label="打开原文" className="-mr-2 grid size-11 shrink-0 place-items-center rounded-full text-ink-4 active:bg-bg-sunk">
                 <IconArrowUpRight size={16} />

@@ -59,7 +59,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </div>
 
       {r.grouping.waiting > 0 && (
-        <Card className="mb-5" title="等待去重确认的精选" right={<span>{num(r.grouping.waiting)} 条等待 · {num(r.grouping.needsAttention)} 条超过 10 分钟</span>} pad={false}>
+        <Card className="mb-5" title="等待去重确认的精选" right={<span>{num(r.grouping.waiting)} 条等待 · {num(r.grouping.needsAttention)} 条超过 10 分钟</span>} pad={false} scrollable>
           <p className="px-4 py-3 text-[13px] text-ink-3">这些新闻已达到精选条件，确认是否重复后才会进入精选。最多展示等待最久的 30 条。</p>
           <DataTable dense rows={r.grouping.items} rowKey={(item) => item.articleId} columns={[
             { key: "title", label: "新闻", render: (item) => <Link className="text-accent" to={`/admin/content/${item.articleId}`}>{item.title}</Link> },
@@ -71,7 +71,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       )}
 
       <div className="grid gap-5 xl:grid-cols-2">
-        <Card title="队列" pad={false}>
+        <Card title="队列" pad={false} scrollable>
           <DataTable
             dense
             rows={[...backlog.entries()]}
@@ -89,7 +89,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
             ]}
           />
         </Card>
-        <Card title="定时任务" pad={false}>
+        <Card title="定时任务" pad={false} scrollable>
           <DataTable
             dense
             rows={r.jobs}
@@ -106,7 +106,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </div>
 
       {r.failedJobs.length > 0 && (
-        <Card className="mt-5" title="24 小时内失败的队列任务" pad={false}>
+        <Card className="mt-5" title="24 小时内失败的队列任务" pad={false} scrollable>
           <DataTable
             dense
             rows={r.failedJobs}
@@ -122,7 +122,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       )}
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>} pad={false}>
+        <Card title="需要核对的付费回执" right={<span>{Object.entries(r.receipts.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>} pad={false} scrollable>
           <DataTable
             dense
             rows={r.receipts.issues}
@@ -138,7 +138,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
             ]}
           />
         </Card>
-        <Card title="需要核实的投递" pad={false}>
+        <Card title="需要核实的投递" pad={false} scrollable>
           <DataTable
             dense
             rows={r.deliveries}
@@ -156,7 +156,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       </div>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Card title="延迟或失败的信源" right={<Link className="text-accent" to="/admin/sources?health=failing">全部失败信源</Link>} pad={false}>
+        <Card title="延迟或失败的信源" right={<Link className="text-accent" to="/admin/sources?health=failing">全部失败信源</Link>} pad={false} scrollable>
           <DataTable
             dense
             rows={r.lagging}
@@ -179,7 +179,7 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
               {r.errors.length > 0 && <Button size="sm" onClick={() => setRequeue("")}>全部重新处理</Button>}
             </span>
           }
-          pad={false}
+          pad={false} scrollable
         >
           <DataTable
             dense
@@ -200,22 +200,20 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       {PARTS.map(({ name, part: Part }) => (r.modules[name] != null ? <Part key={name} data={r.modules[name]} /> : null))}
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Card title="任务时间线" pad={false}>
-          <div className="max-h-[420px] overflow-y-auto">
-            <DataTable
-              dense
-              rows={r.timeline}
-              rowKey={(t) => t.id}
-              columns={[
-                { key: "at", label: "开始", render: (t) => <span className="num whitespace-nowrap">{bj(t.started_at)}</span> },
-                { key: "j", label: "任务", render: (t) => <span className="font-mono text-[12px]">{t.job}</span> },
-                { key: "s", label: "结果", render: (t) => <Badge tone={t.status === "ok" ? "ok" : t.status === "failed" ? "bad" : "muted"} title={t.error ?? undefined}>{t.status ?? "运行中"}</Badge> },
-                { key: "d", label: "耗时", align: "right", render: (t) => duration(t.started_at, t.finished_at) },
-              ]}
-            />
-          </div>
+        <Card title="任务时间线" pad={false} scrollable>
+          <DataTable
+            dense
+            rows={r.timeline}
+            rowKey={(t) => t.id}
+            columns={[
+              { key: "at", label: "开始", render: (t) => <span className="num whitespace-nowrap">{bj(t.started_at)}</span> },
+              { key: "j", label: "任务", render: (t) => <span className="font-mono text-[12px]">{t.job}</span> },
+              { key: "s", label: "结果", render: (t) => <Badge tone={t.status === "ok" ? "ok" : t.status === "failed" ? "bad" : "muted"} title={t.error ?? undefined}>{t.status ?? "运行中"}</Badge> },
+              { key: "d", label: "耗时", align: "right", render: (t) => duration(t.started_at, t.finished_at) },
+            ]}
+          />
         </Card>
-        <Card title="外部上报" pad={false}>
+        <Card title="外部上报" pad={false} scrollable>
           {r.ingest.length ? (
             <DataTable
               dense
@@ -252,16 +250,17 @@ export default function RunsAdmin({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={!!receipt}
         title={`核对回执 #${receipt?.id ?? ""}`}
-        description="结果未知的请求不会自动重发。先到供应商控制台确认这次请求有没有计费，再放行：放行后下一次处理会重新发起调用。"
+        description="自动恢复后仍未知的请求需要人工放行。核对计费情况；暂时无法核对但已获准恢复时，选择计费未知并写明授权。放行后会再次调用，可能重复计费。"
         confirmLabel="记录并放行"
         busy={pending === "release"}
         onClose={() => setReceipt(null)}
-        onSubmit={async (note) => (await run("POST", `/api/admin/receipts/${receipt!.id}/release`, { billed: billed === "true", note }, { label: "release", success: "已放行" })) !== null}
+        onSubmit={async (note) => (await run("POST", `/api/admin/receipts/${receipt!.id}/release`, { billed: billed === "unknown" ? null : billed === "true", note }, { label: "release", success: "已放行" })) !== null}
       >
         <Field label="供应商是否计费">
           <Select value={billed} onChange={(e) => setBilled(e.target.value)}>
             <option value="false">未计费（请求没有被接受）</option>
             <option value="true">已计费（结果没有取回）</option>
+            <option value="unknown">计费未知（已获准恢复）</option>
           </Select>
         </Field>
       </ReasonDialog>

@@ -1,6 +1,6 @@
-// Architecture boundaries that otherwise hold only by convention, and nothing kept that nothing uses.
-// Each rule reads the source and names what breaks it. A rule changes here and in the architecture
-// document together.
+// Architecture boundaries and web rules that otherwise hold only by convention, and nothing kept that
+// nothing uses. Each rule reads the source and names what breaks it. A rule changes here and in the
+// document that states it together.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -18,10 +18,10 @@ const BACKEND = "packages/backend/src";
  * parts on every system (path.relative gives backslashes on Windows): the rules compare and join these
  * names as POSIX paths.
  */
-function sources(dir: string): Array<{ file: string; text: string }> {
+function sources(dir: string, kind = /\.tsx?$/): Array<{ file: string; text: string }> {
   const out: Array<{ file: string; text: string }> = [];
   for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true, recursive: true })) {
-    if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+    if (!entry.isFile() || !kind.test(entry.name)) continue;
     const full = path.join(entry.parentPath, entry.name);
     const file = path.relative(ROOT, full).split(path.sep).join("/");
     if (/\/(node_modules|build|\.react-router)\//.test(file)) continue;
@@ -46,7 +46,7 @@ function violations(files: Array<{ file: string; text: string }>, broken: (file:
 }
 
 test("the web reaches the backend only over HTTP", () => {
-  const found = violations([...sources("apps/web"), ...modules().filter(({ file }) => /^modules\/[^/]+\/web(?:\.|\/)/.test(file))], (_file, spec) => spec.startsWith("@aihot/backend") || spec.includes("packages/backend") || spec === "postgres" || spec === "pg-boss");
+  const found = violations([...sources("apps/web"), ...moduleWeb()], (_file, spec) => spec.startsWith("@aihot/backend") || spec.includes("packages/backend") || spec === "postgres" || spec === "pg-boss");
   assert.deepEqual(found, [], "apps/web imports backend code; read it through /api/site or /api/admin instead");
 });
 
@@ -82,6 +82,7 @@ const OWNERS: Record<string, string> = {
   facts: "events/", fact_articles: "events/", stories: "events/", story_signals: "events/", story_aliases: "events/", story_links: "events/",
   story_digests: "events/", grouping_decisions: "events/", grouping_overrides: "events/",
   audit_log: "audit.ts",
+  feedback_submission_state: "operations/feedback.ts",
 };
 
 test("the tables that carry a rule are written only by the code that owns it", () => {
@@ -111,7 +112,9 @@ test("the public scope and the composite rule are spelled once, in publication/s
 // tools do not make anything used.
 const PRODUCTION = ["packages/backend/src", "packages/contracts/src", "apps/api/src", "apps/worker/src", "apps/web/app"];
 /** The site's modules (modules/<name>/), their tests and local tools left out. */
-const modules = () => (existsSync(path.join(ROOT, "modules")) ? sources("modules").filter(({ file }) => !/\/(tests|scripts)\//.test(file)) : []);
+const modules = (kind?: RegExp) => (existsSync(path.join(ROOT, "modules")) ? sources("modules", kind).filter(({ file }) => !/\/(tests|scripts)\//.test(file)) : []);
+/** The modules' pages: each one's web.tsx and web/ folder. */
+const moduleWeb = (kind?: RegExp) => modules(kind).filter(({ file }) => /^modules\/[^/]+\/web(?:\.|\/)/.test(file));
 const production = () => [...PRODUCTION.flatMap((dir) => sources(dir)), { file: "apps/web/server.ts", text: readFileSync(path.join(ROOT, "apps/web/server.ts"), "utf8") }, ...modules()];
 const words = (text: string) => new Set(text.match(/[A-Za-z_][A-Za-z0-9_]*/g));
 
@@ -161,6 +164,35 @@ test("every environment variable the code reads is listed in a template, and eve
   assert.deepEqual([...listed].filter((name) => !readAnywhere.has(name)), [], "no code reads it: remove it from the template");
 });
 
+// Beijing time is worked out in packages/contracts/src/time.ts. Written out by hand it drifted apart: one
+// copy kept milliseconds and one did not, one threw on a 13th month, one formatted through a locale.
+// Caught: offset arithmetic, a zone glued onto an interpolated date or time, Intl or SQL given the zone's
+// name. A fixed instant written with its zone, or a parser's default zone, converts nothing.
+const convertsBeijingTime = (line: string) =>
+  /(?<![\d.])8 ?\* ?(?:3_?600|60 ?\* ?60)/.test(line)
+  || (line.includes("+08:00") && line.includes("${"))
+  || /(?:timeZone:|AT TIME ZONE) ?["']Asia\/Shanghai/.test(line);
+const CONVERTS_BEIJING_TIME: Record<string, string> = {
+  "packages/contracts/src/time.ts": "the conversions themselves",
+  "packages/backend/src/editorial/analyze.ts": "the score input keeps the form its prompt was tuned on (whole seconds without .000)",
+  "packages/backend/src/editorial/writing.ts": "a beijingDate written out, left to the next change of editorial/",
+  "modules/codex-reset/web/admin-monitor.tsx": "sends a Beijing date and time typed in the admin with its zone, to the minute",
+  "site/changelog/FeatureRelease.tsx": "a changelog entry's Beijing date and time with its zone, to the minute, in dateTime",
+  "clients/decisions/decisions.mjs": "installed as one file away from the repository, so it cannot import time.ts",
+  "clients/watchdog/watchdog.mjs": "installed as one file away from the repository, so it cannot import time.ts",
+};
+
+test("Beijing time is converted only in contracts/time.ts", () => {
+  const code = ["*.ts", "*.tsx", "*.mjs", "*.js"].flatMap(tracked).filter((file) => !/(^|\/)tests\/|\.test\.ts$|^reference\//.test(file));
+  const lines = (file: string) => readFileSync(path.join(ROOT, file), "utf8").split("\n")
+    .map((line, i) => ({ at: `${file}:${i + 1}`, line: line.replace(/\s\/\/.*$/, "") }))
+    .filter(({ line }) => !/^\s*(\/\/|\/\*|\*)/.test(line));
+  const found = code.filter((file) => !(file in CONVERTS_BEIJING_TIME)).flatMap((file) => lines(file).filter(({ line }) => convertsBeijingTime(line)).map(({ at }) => at));
+  assert.deepEqual(found, [], "use packages/contracts/src/time.ts, or add the file to CONVERTS_BEIJING_TIME with its reason");
+  const stale = Object.keys(CONVERTS_BEIJING_TIME).filter((file) => existsSync(path.join(ROOT, file)) && !lines(file).some(({ line }) => convertsBeijingTime(line)));
+  assert.deepEqual(stale, [], "converts nothing any more: take it off CONVERTS_BEIJING_TIME");
+});
+
 // A module can use the engine, but it does not reach into another module; the site composes capabilities.
 test("modules do not import other modules", () => {
   const installed = existsSync(path.join(ROOT, "modules")) ? readdirSync(path.join(ROOT, "modules"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [];
@@ -174,4 +206,61 @@ test("modules do not import other modules", () => {
     return !!target && installed.includes(target) && target !== owner;
   });
   assert.deepEqual(found, [], "compose modules in site/modules instead of importing their implementation");
+});
+
+// The web's own code: the app, the modules' pages, and the site's pages and drawings, stylesheets included.
+// Each line is read without its comments: a word in a comment is neither a class nor a call.
+const WEB_CODE = /\.(?:tsx?|css)$/;
+const webLines = () => [...sources("apps/web/app", WEB_CODE), ...moduleWeb(WEB_CODE), ...sources("site", WEB_CODE)].flatMap(({ file, text }) =>
+  text.split("\n")
+    .map((line, i) => ({ file, at: `${file}:${i + 1}`, line: line.replace(/\/\*.*?\*\//g, "").replace(/(^|\s)\/\/.*$/, "") }))
+    .filter(({ line }) => !/^\s*(\/\/|\/\*|\*)/.test(line)));
+
+// Corners come from the radius scale in app.css (mark 5, control 8, tile 10, card 12, panel 14, sheet 16
+// pixels) or are pills (full); none takes a corner away. Before the scale, 77 hand-written radii in 12
+// sizes from 4 to 20 pixels gave the same kind of box different corners. A radius worked out from a
+// drawing's own size (an inline style from a variable) is the drawing's geometry and is not read.
+const RADIUS_CLASS = /(?<![\w-])rounded(?:-(?:\[[^\]]*\]|\([^)]*\)|\w+))*/g;
+const RADIUS_ON_SCALE = /^rounded(?:-(?:s|e|t|r|b|l|ss|se|es|ee|tl|tr|br|bl))?-(?:mark|control|tile|card|panel|sheet|full|none)$/;
+const CSS_RADIUS = /border(?:-[a-z]+)*-radius\s*:\s*([^;}]+)/g;
+const CSS_RADIUS_ON_SCALE = /^(?:var\(--radius-(?:mark|control|tile|card|panel|sheet)\)|9999px|0)$/;
+
+test("corners use the radius scale", () => {
+  const found = webLines().flatMap(({ at, line }) => [
+    ...[...line.matchAll(RADIUS_CLASS)].map(([written]) => written).filter((written) => !RADIUS_ON_SCALE.test(written)),
+    ...[...line.matchAll(CSS_RADIUS)].map(([, value]) => value!.trim()).filter((value) => !CSS_RADIUS_ON_SCALE.test(value)),
+    ...(/borderRadius\s*:\s*["'`]?\d/.test(line) ? ["borderRadius"] : []),
+  ].map((written) => `${at} ${written}`));
+  assert.deepEqual(found, [], "use rounded-mark, -control, -tile, -card, -panel, -sheet or -full (var(--radius-…) in CSS); a size the scale lacks is added to the scale in app.css first");
+});
+
+// Copying goes through copyText in apps/web/app/lib/clipboard.ts: in-app browsers without the asynchronous
+// clipboard fall back to a selection copy, and a copy that fails is reported. Five places wrote to the
+// clipboard themselves and skipped the fallback; one of them never copied inside WeChat.
+test("the clipboard is written only through lib/clipboard.ts", () => {
+  const found = webLines()
+    .filter(({ file, line }) => file !== "apps/web/app/lib/clipboard.ts" && /navigator\.clipboard|execCommand\(\s*["']copy/.test(line))
+    .map(({ at }) => at);
+  assert.deepEqual(found, [], "copy with copyText from lib/clipboard.ts");
+});
+
+// Scripts read the reader's reduced-motion preference through apps/web/app/lib/motion.ts (reducedMotion,
+// scrollBehavior); stylesheets keep their own media query. Written by hand it was copied into 13 files, some
+// guarding against a missing matchMedia and some not, each deciding again how a jump scrolls.
+test("scripts read the reduced-motion preference only through lib/motion.ts", () => {
+  const found = webLines()
+    .filter(({ file, line }) => !file.endsWith(".css") && file !== "apps/web/app/lib/motion.ts" && line.includes("prefers-reduced-motion"))
+    .map(({ at }) => at);
+  assert.deepEqual(found, [], "use reducedMotion() or scrollBehavior() from lib/motion.ts");
+});
+
+// Pages are prefetched only when the reader presses a link (IntentLink). React Router's own prefetch runs
+// on hover, focus, render or viewport; the phone tab bar kept it after every other link had moved to
+// presses, so a narrow desktop window downloaded a tab's page whenever the pointer crossed it.
+test("pages are prefetched only through IntentLink", () => {
+  const found = webLines()
+    .filter(({ file, line }) => file !== "apps/web/app/components/ui/IntentLink.tsx"
+      && /\bprefetch\s*=|\bprefetch\s*:\s*["'`]|PrefetchPageLinks|rel=["']prefetch/.test(line))
+    .map(({ at }) => at);
+  assert.deepEqual(found, [], "link with IntentLink (in PillTabs, prefetchOnPress), which prefetches when the reader presses");
 });

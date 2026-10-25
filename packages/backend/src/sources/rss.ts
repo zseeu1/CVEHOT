@@ -1,5 +1,7 @@
 // RSS 2.0 / Atom / RDF feeds.
+import { readPublicationDate } from "./dates.ts";
 import { XMLParser } from "fast-xml-parser";
+import { languageHeaders, requireOk } from "../lib/http-fetch.ts";
 import { fetchListing } from "./listing-fetch.ts";
 import { collapseWhitespace, escapeXml, stripTags } from "../lib/text.ts";
 import { sanitizeBody } from "../content/sanitize.ts";
@@ -93,7 +95,7 @@ function imagesFrom(html: string, base: string): Array<{ kind: "image"; url: str
 
 /**
  * Feed text of an editorial source that only teases the article: short and ending in a "read more"
- * mark (The Verge's "Read the full story at The Verge."). Treated as a summary, so extraction fetches
+ * mark (a news site's "Read the full story at <its name>."). Treated as a summary, so extraction fetches
  * the page before the article is judged.
  */
 const TEASER_BELOW = 1200;
@@ -145,13 +147,14 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
   // Config changes can alter parsing/filtering even when the upstream bytes did not change.
   const configHash = sha256(stableJson(source.config));
   const previous = !opts.force && source.cursor?.rss?.configHash === configHash ? source.cursor.rss as RssValidator : null;
-  const headers: Record<string, string> = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8" };
+  const plain = { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8", ...languageHeaders(source.config.acceptLanguage) };
+  const headers: Record<string, string> = { ...plain };
   if (previous?.etag) headers["if-none-match"] = previous.etag;
   if (previous?.lastModified) headers["if-modified-since"] = previous.lastModified;
   let res = await fetchListing(url, { headers, timeoutMs: 25_000 });
   // A redirect may have changed destinations, whose ETag namespace is unrelated to the old one.
   if (res.status === 304 && previous && res.url !== previous.responseUrl) {
-    res = await fetchListing(url, { headers: { accept: headers.accept! }, timeoutMs: 25_000 });
+    res = await fetchListing(url, { headers: plain, timeoutMs: 25_000 });
   }
   const validator: RssValidator = {
     configHash, responseUrl: res.url,
@@ -161,7 +164,7 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
   if (res.status === 304 && previous && (previous.etag || previous.lastModified) && res.url === previous.responseUrl) {
     return { candidates: [], validator, notModified: true };
   }
-  if (res.status !== 200) throw new FetchError(`HTTP ${res.status}`, res.status);
+  requireOk(res);
   let doc: Record<string, any>;
   try {
     doc = parser.parse(res.text());
@@ -176,7 +179,9 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
     const items = arr(doc.rss?.channel?.item ?? doc["rdf:RDF"]?.item);
     for (const it of items) {
       const guid = text(it.guid);
-      const page = text(it.link) || (normalizeUrl(guid) ? guid : "");
+      // A site-relative link resolves against the fetched document, as Atom links do; absolute ones stay as given.
+      const href = text(it.link);
+      const page = (href && !/^[a-z][a-z\d+.-]*:/i.test(href) ? URL.parse(href, res.url)?.toString() : href) || (normalizeUrl(guid) ? guid : "");
       const enclosures = arr(it.enclosure as Record<string, string> | Array<Record<string, string>>);
       // An episode with no page (no <link>, a guid that is no address) links to its audio or video file,
       // which a browser plays. Its identity stays the one its guid gives, and it has no page to read a body from.
@@ -200,7 +205,7 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         ...(mediaFile ? { identityKey: identityKeyFor({ sourceId: source.id, url: guid, title, via: "fetch" }) } : {}),
         title,
         author: text(it["dc:creator"]) || text(it.author) || null,
-        publishedAt: parseDate(text(it.pubDate) || text(it["dc:date"]) || text(it.published)),
+        ...readPublicationDate((text(it.pubDate) || text(it["dc:date"]) || text(it.published)).replace(/星期[一二三四五六日天]/, ""), source.config.publishedAtUtcOffset),
         ...feedText(bodyHtml, description ? stripTags(description) : null, source, !mediaFile && !video),
         ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),
         media: media.slice(0, 6),
@@ -231,7 +236,8 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         url: entryUrl,
         title,
         author: text(arr(e.author)[0]?.name) || null,
-        publishedAt: parseDate(text(e.published) || text(e.updated)),
+        // Atom updated describes a revision, not the original publication.
+        ...readPublicationDate(text(e.published), source.config.publishedAtUtcOffset),
         sourceUpdatedAt: parseDate(text(e.updated)),
         ...feedText(bodyHtml, summary, source, !video, plainBody),
         ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),

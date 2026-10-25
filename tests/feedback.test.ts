@@ -140,3 +140,15 @@ test("imported feedback that was never forwarded is not sent now", async () => {
   assert.equal((await state(row!.id)).forwarded, false);
   assert.equal(sentFor(row!.id), undefined);
 });
+
+test("a browser retry creates one feedback and forwards one notification", async () => {
+  process.env.FEISHU_INTERNAL_ENABLED = "true";
+  const input = { ip: "203.0.113.190", userAgent: "Firefox", content: `重试的安全报告 ${T}: <script>alert(1)</script>` };
+  const results = await Promise.all(Array.from({ length: 4 }, () => submitFeedback(input)));
+  assert.equal(new Set(results.map(r => r.id)).size, 1);
+  const id = results[0]!.id;
+  for (let i = 0; i < 100 && !(await state(id)).forwarded; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok((await state(id)).forwarded);
+  assert.equal(feishu.sent.filter(m => m.title === `反馈 #${id}`).length, 1);
+  assert.ok(JSON.stringify(sentFor(id)?.content).includes(input.content));
+});

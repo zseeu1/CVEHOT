@@ -169,7 +169,15 @@ process.on("unhandledRejection", (reason) => {
 });
 
 server.keepAliveTimeout = 65_000;
-server.listen(PORT, HOST, () => console.log(JSON.stringify({ level: "info", msg: "web started", port: (server.address() as import("node:net").AddressInfo).port, pid: process.pid })));
+server.listen(PORT, HOST, () => {
+  const port = (server.address() as import("node:net").AddressInfo).port;
+  // An ephemeral local site learns its canonical origin only after the listener owns the port.
+  if (process.env.SITE_URL) {
+    const site = new URL(process.env.SITE_URL);
+    if (site.port === "0") { site.port = String(port); process.env.SITE_URL = site.origin; }
+  }
+  console.log(JSON.stringify({ level: "info", msg: "web started", port, pid: process.pid }));
+});
 
 const shutdown = () => server.close(() => process.exit(0));
 process.on("SIGTERM", shutdown);

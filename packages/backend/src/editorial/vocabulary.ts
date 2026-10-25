@@ -30,11 +30,14 @@ export const CATEGORY_GUIDE = CATEGORIES.map((c) => `- ${c.key}（${c.label}）�
 /** The industry's headline launch (RELEASE): narrower than its category, which also holds prices and benchmarks. */
 export const isRelease = (category: string | null, tags: readonly string[]) => RELEASE !== null && category === RELEASE.category && tags.includes(RELEASE.tag);
 
+/** Every name the vocabulary knows a company by. */
+export const entityNames = (e: (typeof ENTITIES)[string]) => [e.name, ...e.aliases, ...(e.orgNames ?? []), ...(e.otherNames ?? [])];
+
 const key = (value: string) => value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, "");
 /** Exact entity/alias only: mentions embedded in a sentence are not ownership. */
 export function entityIdentity(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
   const normalized = key(value);
-  const matches = Object.entries(ENTITIES).filter(([id, entity]) => [id, entity.name, ...entity.aliases, ...(entity.otherNames ?? [])].some((alias) => key(alias) === normalized));
+  const matches = Object.entries(ENTITIES).filter(([id, entity]) => [id, ...entityNames(entity)].some((alias) => key(alias) === normalized));
   return matches.length > 1 ? null : matches[0]?.[0] ?? null;
 }

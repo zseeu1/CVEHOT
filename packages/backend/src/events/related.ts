@@ -1,29 +1,43 @@
 // Saved bridge judgements remain evidence after the recall window; an explicit change to the
 // judgement, publication or fact membership can invalidate them without deleting the link history.
 // A judgement counts for the story its fact is in now, as links are made, so a story merge carries it along.
+// Which judgement ties a report to another story is written once here, for making links
+// (consolidate.ts linkRelatedStories) and for reading them.
 import { sql } from "../db.ts";
 import { latestCompositeCondition, storyReportCondition } from "../publication/scope.ts";
-import { TIE_MIN_CONFIDENCE } from "./relate.ts";
+import { TIE_MIN_CONFIDENCE, TIE_RELATIONS } from "./relate.ts";
 
 export const RELATED_MIN_REPORTS = 2;
 
+type Fragment = ReturnType<typeof sql>;
+
+/**
+ * Each report's latest grouping judgement, among the decisions `scope` (a condition on `d`) admits. A
+ * revision that kept its membership is not one: it neither renews nor revokes the ties judged before it.
+ */
+export function latestJudgements(scope: Fragment) {
+  return sql`SELECT DISTINCT ON (d.article_id) d.id, d.article_id, d.verdict, d.candidates FROM grouping_decisions d
+    WHERE d.verdict <> 'kept' AND ${scope} ORDER BY d.article_id, d.id DESC`;
+}
+
+/** Judgement `d` firmly tied its report to candidate `c`, one of `d.candidates` (relate.ts firmlyTied). */
+export function firmTie(d: Fragment, c: Fragment) {
+  return sql`${d}.verdict IN ('same-fact', 'same-url', 'new-fact-in-story', 'new-story')
+    AND ${c}->>'relation' IN ${sql(TIE_RELATIONS)} AND (${c}->>'confidence')::numeric >= ${TIE_MIN_CONFIDENCE}`;
+}
+
 /** One row per known bridge report, with its current validity. Missing history proves no revocation. */
-export function relatedEvidence(story: ReturnType<typeof sql>, other: ReturnType<typeof sql>, now: Date) {
+export function relatedEvidence(story: Fragment, other: Fragment, now: Date) {
   return sql`(
     WITH judged AS (
       SELECT DISTINCT d.id, d.article_id, d.fact_id FROM facts own
       JOIN grouping_decisions d ON d.fact_id = own.id
       CROSS JOIN LATERAL jsonb_array_elements(d.candidates) c
       JOIN facts candidate ON candidate.id = (c->>'id')::bigint
-      WHERE own.story_id IN (${story}, ${other})
-        AND d.verdict IN ('same-fact', 'same-url', 'new-fact-in-story', 'new-story')
-        AND c->>'relation' IN ('SAME_OCCURRENCE', 'SAME_STORY') AND (c->>'confidence')::numeric >= ${TIE_MIN_CONFIDENCE}
+      WHERE own.story_id IN (${story}, ${other}) AND ${firmTie(sql`d`, sql`c`)}
         AND ((own.story_id = ${story} AND candidate.story_id = ${other})
           OR (own.story_id = ${other} AND candidate.story_id = ${story}))),
-    latest AS (
-      SELECT d.article_id, max(d.id) AS id FROM grouping_decisions d
-      WHERE d.article_id IN (SELECT article_id FROM judged) AND d.verdict <> 'kept'
-      GROUP BY d.article_id)
+    latest AS (${latestJudgements(sql`d.article_id IN (SELECT article_id FROM judged)`)})
     SELECT j.article_id, bool_or((j.id = latest.id
       AND ${storyReportCondition(now)} AND NOT ${latestCompositeCondition(sql`j.article_id`)}
       AND EXISTS (SELECT 1 FROM fact_articles fa WHERE fa.article_id = j.article_id

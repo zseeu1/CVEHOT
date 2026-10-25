@@ -6,6 +6,8 @@
 // must not be reevaluated merely because they predate the value field. Prompts use real samples.
 // A duplicate of a fact rejected for low increment must not gain a first selected seat merely by
 // sharing its identity or URL; better reporting of an unseen fact can still become its first pick.
+// A launch selected before the identity window is forgotten, so an official re-introduction weeks
+// later takes a fresh selected seat (and a push) as if it were new.
 import { embeddingsStub, stub, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -58,8 +60,11 @@ async function root(text: string, selected = true) {
   const before = provider.hits();
   const result = await groupArticle(id);
   assert.equal(provider.hits(), before, "no candidates need no extra judgement call");
+  await releasedMinuteAgo(id);
   return { id, result };
 }
+/** Released a minute ago: a later reader still sees it as prior coverage when the VM's clock steps back (on the CI VMs by as much as 0.4 s). */
+const releasedMinuteAgo = (id: string) => sql`UPDATE publications SET visible_after = visible_after - interval '1 minute' WHERE article_id = ${id}`;
 async function state(id: string) {
   return (await sql`SELECT a.selection_adds_value,a.selection_value_reason,a.grouping_status,p.selected,p.eligible,p.fact_id
     FROM articles a JOIN publications p ON p.article_id=a.id WHERE a.id=${id}`)[0]!;
@@ -209,6 +214,7 @@ for (const addsValue of [false, true]) test(`a selected composite supplies readi
   const text = family();
   const background = await report(text + "综合首发", "composite");
   await groupArticle(background);
+  await releasedMinuteAgo(background);
   assert.deepEqual([(await state(background)).selected,(await state(background)).fact_id], [true,null]);
   const fullSummary = text + "。" + "已公开能力说明，".repeat(80) + "末项功能支持输出透明图层";
   await sql`UPDATE publications SET summary=${fullSummary} WHERE article_id=${background}`;
@@ -236,7 +242,7 @@ test("reading-only context excludes unselected, nonpublic and old reports", asyn
     await groupArticle(background);
     if (unavailable === "unselected") await sql`UPDATE publications SET selected=false WHERE article_id=${background}`;
     if (unavailable === "withdrawn") await sql`UPDATE publications SET visibility='withdrawn' WHERE article_id=${background}`;
-    if (unavailable === "old") await sql`UPDATE publications SET discovered_at=now()-interval '15 days' WHERE article_id=${background}`;
+    if (unavailable === "old") await sql`UPDATE publications SET discovered_at=now()-interval '61 days' WHERE article_id=${background}`;
     selection = { addsValue: false, reason: "不能把不可见资料算作读者已看过" };
     const id = await report(text + "报道");
     const calls = provider.hits();
@@ -244,6 +250,44 @@ test("reading-only context excludes unselected, nonpublic and old reports", asyn
     assert.equal(provider.hits(), calls, unavailable);
     assert.equal((await state(id)).selected, true, unavailable);
   }
+});
+
+/** Discovered `days` ago: out of the identity window, still in front of readers who saw it then. */
+const age = async (id: string, days: number) => {
+  await sql`UPDATE articles SET discovered_at=now()-make_interval(days => ${days}) WHERE id=${id}`;
+  await sql`UPDATE publications SET discovered_at=now()-make_interval(days => ${days}) WHERE article_id=${id}`;
+};
+
+test("a launch selected before the identity window is still reader coverage for a re-introduction", async () => {
+  const text = family();
+  const launch = await root(text + "首发");
+  await age(launch.id, 15);
+  relation = "SAME_OCCURRENCE"; // Reading context must never be turned into an identity candidate.
+  selection = { addsValue: false, reason: "再次介绍首发已经披露的能力" };
+  const id = await report(text + "再次介绍用法");
+  const calls = provider.hits();
+  const result = await groupArticle(id);
+  assert.equal(provider.hits(), calls + 1, "judged in the batch call");
+  assert.ok(users.at(-1)!.includes("已公开精选阅读背景 R1") && users.at(-1)!.includes(text + "首发"));
+  assert.doesNotMatch(users.at(-1)!, /【候选 C\d+】/);
+  assert.equal(result.verdict, "new-story", "identity keeps its own window");
+  assert.deepEqual([(await state(id)).selection_adds_value, (await state(id)).selected], [false, false]);
+});
+
+test("a selected fact still among the candidates is not repeated as reading context", async () => {
+  const text = family();
+  const launch = await root(text + "首发");
+  relation = "SAME_OCCURRENCE";
+  selection = { addsValue: true, reason: "same fact" };
+  const later = await report(text + "首发另一来源"); // keeps the fact in the identity window
+  assert.equal((await groupArticle(later)).factId, launch.result.factId);
+  await age(launch.id, 20);
+  selection = { addsValue: false, reason: "已覆盖" };
+  const id = await report(text + "再次介绍");
+  await groupArticle(id);
+  const batch = users.findLast(u => u.startsWith(`【新报道】\n标题：${text}再次介绍`))!;
+  assert.match(batch, /【候选 C1】/);
+  assert.doesNotMatch(batch, /阅读背景/);
 });
 
 test("unselected candidates are not prior selected coverage", async () => {
@@ -264,6 +308,7 @@ test("value context uses the actually selected report without replacing the iden
   relation = "SAME_OCCURRENCE";
   selection = { addsValue: true, reason: "same fact" };
   await groupArticle(id);
+  await releasedMinuteAgo(id);
   const [candidate] = await candidateViews([{ factId: first.result.factId!, storyId: first.result.storyId!, factTitle: text, score: 1 }]);
   assert.equal(candidate!.report.title, text);
   assert.equal(candidate!.selected, true);

@@ -2,5 +2,10 @@
 # responses. Point the domain's DNS at this server first.
 {$SITE_DOMAIN} {
 	encode zstd gzip
+	header ?Strict-Transport-Security "max-age=31536000"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?X-Content-Type-Options "nosniff"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
+	header ?Permissions-Policy "camera=(), microphone=(), geolocation=()"
 	reverse_proxy web:3000
 }

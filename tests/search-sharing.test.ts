@@ -13,13 +13,15 @@ const id = `search-share-${tag()}`;
 const query = { channel: 'all' as const, category: null, tag: id, q: id, tab: 'relevance' as const };
 
 before(async () => {
+  // Found and released a minute ago: a rolling window that ends at the reader's clock holds it.
+  const minuteAgo = new Date(Date.now() - 60_000);
   await sql`INSERT INTO sources(id,name,kind,tier,participation_mode) VALUES(${id},'Shared search','rss','T1','editorial')`;
   await sql`INSERT INTO articles(id,source_id,identity_key,url,title,discovered_at,timeline_at)
-    VALUES(${id},${id},${id},${`https://example.org/${id}`},${id},now(),now())`;
+    VALUES(${id},${id},${id},${`https://example.org/${id}`},${id},${minuteAgo},${minuteAgo})`;
   await sql`INSERT INTO publications(article_id,source_id,url,title,summary,search_text,tags,category,channel,
     discovered_at,timeline_at,sort_at,eligible,selected,visible_after)
     VALUES(${id},${id},${`https://example.org/${id}`},${id},'search example',${id},${[id]},'advisory','news',
-      now(),now(),now(),true,false,now())`;
+      ${minuteAgo},${minuteAgo},${minuteAgo},true,false,${minuteAgo})`;
   await sql`INSERT INTO pool_search(article_id,direct,body) VALUES(${id},${id},'')`;
 });
 after(async () => { await app.close(); await closeDb(); });

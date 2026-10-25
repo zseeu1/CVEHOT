@@ -2,10 +2,31 @@
 // constraint validation run separately so earlier DDL cannot hold a strong lock during a table scan.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type postgres from "postgres";
 import { FIRST_ONLINE_MIGRATION, migrationPlan, type MigrationPlan } from "./migration-safety.ts";
 
-export async function runMigrations(sql: postgres.Sql, root: string): Promise<number> {
+/**
+ * The daily backup's pg_dump holds ACCESS SHARE on every table and one snapshot for minutes, so DDL hits
+ * its lock timeout and a concurrent index build is left invalid. Wait for that dump,
+ * up to `waitMs`; other lock holders still fail fast. pg_dump names its connection after itself.
+ */
+async function waitForBackupDump(session: postgres.ReservedSql, waitMs: number, before: string) {
+  const deadline = Date.now() + waitMs;
+  let reported = false;
+  for (;;) {
+    const [dump] = await session<{ pid: number }[]>`
+      SELECT pid FROM pg_stat_activity WHERE application_name = 'pg_dump' AND datname = current_database() LIMIT 1`;
+    if (!dump) return;
+    if (Date.now() >= deadline) throw new Error(`migration ${before} waited ${Math.round(waitMs / 1000)}s for the backup's pg_dump (pid ${dump.pid}); release again once it finishes`);
+    if (!reported) console.log(`waiting for the backup's pg_dump (pid ${dump.pid}) to finish before ${before}`);
+    reported = true;
+    await sleep(1000);
+  }
+}
+
+/** `backupWaitMs`: how long to wait for a running backup dump before each migration (none by default). */
+export async function runMigrations(sql: postgres.Sql, root: string, { backupWaitMs = 0 } = {}): Promise<number> {
   const sqlFiles = (dir: string) => existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".sql")).map((name) => ({ name, file: path.join(dir, name) })) : [];
   const modules = path.join(root, "modules");
   const migrations = [
@@ -32,7 +53,8 @@ export async function runMigrations(sql: postgres.Sql, root: string): Promise<nu
     let count = 0;
     for (const { name, text, plan } of prepared) {
       if (applied.has(name)) continue;
-      const start = Date.now();
+      await waitForBackupDump(session, backupWaitMs, name);
+      const start = performance.now();
       try {
         await session`SELECT set_config('lock_timeout', ${plan.kind === "transaction" ? "1s" : "30s"}, false)`;
         await session`SELECT set_config('statement_timeout', ${plan.kind === "transaction" ? "10s" : "30min"}, false)`;
@@ -61,9 +83,9 @@ export async function runMigrations(sql: postgres.Sql, root: string): Promise<nu
           }
         }
       } catch (error) {
-        throw new Error(`migration ${name} failed after ${Date.now() - start}ms: ${(error as Error).message}`, { cause: error });
+        throw new Error(`migration ${name} failed after ${Math.round(performance.now() - start)}ms: ${(error as Error).message}`, { cause: error });
       }
-      console.log(`applied ${name} (${Date.now() - start}ms, ${plan.kind})`);
+      console.log(`applied ${name} (${Math.round(performance.now() - start)}ms, ${plan.kind})`);
       count++;
     }
     console.log(count === 0 ? "database is up to date" : `${count} migration(s) applied`);
@@ -77,6 +99,8 @@ export async function runMigrations(sql: postgres.Sql, root: string): Promise<nu
 if (import.meta.main) {
   const { REPO_ROOT } = await import("@aihot/backend/config");
   const { closeDb, sql } = await import("@aihot/backend/db");
-  try { await runMigrations(sql, REPO_ROOT); }
+  // As long as the worker waits for a whole backup on stop: the dump is the first part of it.
+  const { STOP_TIMEOUT_MS } = await import("@aihot/backend/jobs/queue");
+  try { await runMigrations(sql, REPO_ROOT, { backupWaitMs: STOP_TIMEOUT_MS }); }
   finally { await closeDb(); }
 }

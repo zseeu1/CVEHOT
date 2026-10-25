@@ -23,3 +23,7 @@ test("channels that do not apply the publication boundary refuse it instead of i
     assert.deepEqual(unsupportedConfig(kind, { publishedAfter: "2026-09-28T00:00:00Z" }), ["publishedAfter"]);
   }
 });
+
+test("RSS can name the timezone of a date-only feed entry", () => {
+  assert.deepEqual(unsupportedConfig("rss", { publishedAtUtcOffset: "+00:00" }), []);
+});

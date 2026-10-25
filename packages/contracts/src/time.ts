@@ -14,6 +14,29 @@ export function beijingTime(instant: Date | string | number): string {
   return d.toISOString().slice(11, 16);
 }
 
+/** The instant as ISO 8601 in Beijing time, to the millisecond: "2026-09-26T08:07:13.000+08:00". */
+export function beijingIso(instant: Date | string | number): string {
+  return `${new Date(new Date(instant).getTime() + OFFSET_MS).toISOString().slice(0, 23)}+08:00`;
+}
+
+/**
+ * "9月28日" of a calendar date (YYYY-MM-DD). Given `today` (YYYY-MM-DD, Beijing), a day of another year carries its
+ * year, so an archived item is not read as this year's: "2019年2月19日".
+ */
+export function monthDay(date: string, today?: string): string {
+  const year = today && date.slice(0, 4) !== today.slice(0, 4) ? `${date.slice(0, 4)}年` : "";
+  return `${year}${Number(date.slice(5, 7))}月${Number(date.slice(8, 10))}日`;
+}
+
+/** "9月29日" in Beijing time. */
+export const beijingDay = (instant: Date | string | number) => monthDay(beijingDate(instant));
+
+/** "9月29日 13:40" in Beijing time. */
+export const beijingStamp = (instant: Date | string | number) => `${beijingDay(instant)} ${beijingTime(instant)}`;
+
+/** The zone's name, for whatever takes one (a scheduler, a report's metadata, SQL `AT TIME ZONE`). */
+export const BEIJING_TIMEZONE = "Asia/Shanghai" as const;
+
 /** UTC instant of 00:00 Beijing on the given calendar day. */
 export function beijingMidnight(date: string): Date {
   return new Date(Date.parse(`${date}T00:00:00+08:00`));

@@ -2,11 +2,12 @@
 // job_runs; missed slots run once.
 import type { PgBoss } from "pg-boss";
 import { ensureQueue, recordRun } from "@aihot/backend/jobs/queue";
-import { responder, serverModules, type Scheduled } from "@aihot/backend/modules";
+import { serverModules, type Scheduled } from "@aihot/backend/modules";
 import { sweepUnprocessed } from "@aihot/backend/jobs/content";
 import { translatePending } from "@aihot/backend/editorial/translate";
 import { adaptIntervals, scheduleDueSources } from "@aihot/backend/sources/collect";
 import { scheduleMpReconcile } from "@aihot/backend/sources/mp";
+import { followXRenames } from "@aihot/backend/sources/x-renames";
 import { dajialaConfigured } from "@aihot/backend/providers/dajiala";
 import { refreshSourceIcons } from "@aihot/backend/sources/icons";
 import { computeHotRanking, snapshotHeat } from "@aihot/backend/events/hot";
@@ -34,23 +35,25 @@ const ENGINE_SCHEDULES: Scheduled[] = [
   { name: "reports.compose", cron: "0,30 * * * *", missed: "once", run: () => composeDueReports() },
   // The deletions the privacy notice promises, once their retention periods are over.
   { name: "ops.retention", cron: "30 3 * * *", missed: "once", run: () => dailyRetention() },
-  // IndexNow for new indexable pages (off unless INDEXNOW_SUBMIT_ENABLED).
-  { name: "seo.indexnow", cron: "50 5 * * *", missed: "once", run: () => submitIndexNow() },
+  // IndexNow for added, changed and removed discovery URLs, hourly so a new story or report reaches Bing,
+  // and the AI answers that search it, within the hour (off unless INDEXNOW_SUBMIT_ENABLED).
+  { name: "seo.indexnow", cron: "50 * * * *", missed: "once", run: () => submitIndexNow() },
   // Work a stopped process left half way becomes visible, and unknown paid requests get their one
   // automatic release; ops.alerts runs in parallel and sees the result by its next run at the latest.
   { name: "ops.recover", cron: "*/10 * * * *", run: () => recoverStaleWork() },
   { name: "ops.alerts", cron: "*/10 * * * *", run: () => checkAlerts() },
-  // One message with other follow-ups and their actual impact (nothing when there are none); a site's
-  // responder supplies its own notification policy instead.
-  { name: "ops.digest", cron: "0 9 * * *", missed: "once", run: () => sendDigest(), when: () => !responder() },
+  // One message with other follow-ups and their actual impact (nothing when there are none).
+  { name: "ops.digest", cron: "0 9 * * *", missed: "once", run: () => sendDigest() },
   // Feedback that did not reach the internal Feishu chat when it was sent (off with FEISHU_INTERNAL_ENABLED).
   { name: "feedback.forward", cron: "*/10 * * * *", run: () => forwardPendingFeedback() },
   ...(backupConfigured() ? [{ name: "ops.backup", cron: "10 4 * * *", missed: "once" as const, run: () => runBackup() }] : []),
-  { name: "reports.source-health", cron: "0 9 * * 1", missed: "once", run: () => sourceHealthWeekly(), when: () => !responder() },
+  { name: "reports.source-health", cron: "0 9 * * 1", missed: "once", run: () => sourceHealthWeekly() },
   ...(collecting
     ? [
         { name: "sources.schedule", cron: "* * * * *", run: () => scheduleDueSources() },
         { name: "sources.adapt-intervals", cron: "20 4 * * *", run: adaptIntervals },
+        // X accounts quiet for a day: a renamed one is followed to its new handle (SocialData, paid per lookup).
+        { name: "sources.x-renames", cron: "50 4 * * *", missed: "once" as const, run: () => followXRenames() },
         // Icons are read from the sources' own sites, so they stop with collection.
         { name: "sources.icons", cron: "40 4 * * *", missed: "once" as const, run: () => refreshSourceIcons() },
       ]

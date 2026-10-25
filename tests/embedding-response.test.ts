@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { EMBEDDING_DIMS, ensureEmbeddings } from "@aihot/backend/providers/embeddings";
-import { ModelOutputError } from "@aihot/backend/providers/llm";
+import { ModelOutputError } from "@aihot/backend/providers/receipts";
 
 let answer: unknown;
 const provider = await stub(() => answer);

@@ -1,14 +1,19 @@
 // Listing parsers on the page shapes Jina returns for real sites: card links that wrap an image, a title
 // attribute, http links under https prefixes, and navigation that is no post. Also what made articles
 // flip between versions: in-page anchors of an HTML listing and
-// promotions a feed rotates inside its posts.
+// promotions a feed rotates inside its posts. A Next.js flight payload whose posts carry arrays of their
+// own (LMSYS "categories":["sglang"]) was cut at the first "]" and read as no posts. A site that negotiates
+// its language (Cursor) sent our default Chinese preference to its translation: a source's own language
+// must reach every read of it.
 import "./setup.ts";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, test } from "node:test";
 import { config } from "@aihot/backend/config";
+import { extractFromUrl, pageRules } from "@aihot/backend/content/extract";
 import { sanitizeBody, trimTrailingChrome } from "@aihot/backend/content/sanitize";
-import { fetchDetail, fromHtml, fromMarkdown } from "@aihot/backend/sources/web-list";
+import { unsupportedConfig } from "@aihot/backend/sources/config-keys";
+import { fetchDetail, fetchWebList, fromHtml, fromMarkdown } from "@aihot/backend/sources/web-list";
 import { fetchRss } from "@aihot/backend/sources/rss";
 import { fetchJsonList } from "@aihot/backend/sources/json-list";
 import { noiseFiltered } from "@aihot/backend/sources/filters";
@@ -16,12 +21,12 @@ import { noiseFiltered } from "@aihot/backend/sources/filters";
 const source = (config: Record<string, unknown>) => ({ id: "test-list", config }) as never;
 
 const pages: Record<string, () => string> = {
-  // The Verge's feed: a teaser that ends in "Read the full story", next to a post whose feed carries it whole.
-  "/verge.xml": () =>
+  // A news site's feed: a teaser that ends in "Read the full story", next to a post whose feed carries it whole.
+  "/teaser.xml": () =>
     `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">` +
     `<entry><title>AMD is acquiring World Labs</title><link rel="alternate" href="https://example.org/amd-world-labs"/><published>2026-09-28T17:31:35-04:00</published>` +
     `<summary type="html">AMD announced today that it's acquiring World Labs.</summary>` +
-    `<content type="html"><![CDATA[<p>${"AMD announced today that it is acquiring World Labs in an all-stock deal. ".repeat(8)}</p><p>Read the full story at The Verge.</p>]]></content></entry>` +
+    `<content type="html"><![CDATA[<p>${"AMD announced today that it is acquiring World Labs in an all-stock deal. ".repeat(8)}</p><p>Read the full story at Example News.</p>]]></content></entry>` +
     `<entry><title>A whole post</title><link rel="alternate" href="https://example.org/whole"/><published>2026-09-28T10:00:00Z</published>` +
     `<content type="html"><![CDATA[<p>${"The feed carries this post whole, paragraph after paragraph. ".repeat(30)}</p>]]></content></entry></feed>`,
   // A podcast whose feed summary is the whole episode note, in RSS and in Atom.
@@ -34,15 +39,34 @@ const pages: Record<string, () => string> = {
   // A list API that gives wall-clock times without a zone, and a page whose metadata does too.
   "/zoneless.json": () => JSON.stringify({ result: [{ id: "a", title: "采购公告", publishDate: "2026-09-30 17:43:58" }, { id: "b", title: "Zoned", publishDate: "2026-09-30T17:43:58Z" }, { id: "c", title: "Abbreviated zone", publishDate: "Wed, 30 Sep 2026 17:43:58 EST" }] }),
   "/zoneless-post": () => `<html><head><meta property="article:published_time" content="2026-09-30 17:43:58"></head><body><p>Post</p></body></html>`,
+  // A Next.js page whose embedded posts hold arrays and brackets of their own.
+  "/flight": () => `<html><body><script>self.__next_f.push([1,${JSON.stringify(`5:["$","div",null,{"children":[],"posts":${JSON.stringify([
+    { slug: "first", title: "First [draft] post", categories: ["sglang", "news"] }, { slug: "second", title: "Second post", meta: { tags: [["a"]] } },
+  ])},"after":["x"]}]\n`)}])</script></body></html>`,
   // A list API that gives calendar days as yyyymmdd.
   "/days.json": () => JSON.stringify({ data: { list: [{ seq: 695, ttl: "MCFlow", day: "20260922" }, { seq: 1, ttl: "Bad day", day: "20260230" }] } }),
   // Google Developers Blog: no date in the feed or in meta tags, only in JSON-LD.
   "/ld-post": () =>
     `<html><head><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","name":"Blog"},` +
     `{"@type":"BlogPosting","headline":"Turn REST APIs into MCP tools","datePublished":"2026-09-24"}]}</script></head><body><p>Post</p></body></html>`,
+  // A site that negotiates its language: the article at /en/post, its translation at /zh/post.
+  "/en/blog": () => `<a class="row" href="/en/post"><p>Improved token efficiency</p><time>Sep 23, 2026</time></a>`,
+  "/en/post": () => article("Improved token efficiency", "Agents now finish longer runs with fewer tokens. ".repeat(8)),
+  "/zh/post": () => article("提升 token 效率", "智能体现在能用更少的 token 完成更长的运行。".repeat(12)),
+  "/en/feed.xml": () => `<rss version="2.0"><channel><item><title>Improved token efficiency</title><link>${site}/en/post</link><pubDate>Wed, 23 Sep 2026 12:00:00 GMT</pubDate></item></channel></rss>`,
+  "/en/items.json": () => JSON.stringify([{ title: "Improved token efficiency", url: `${site}/en/post` }]),
 };
+function article(title: string, text: string) {
+  return `<html><head><title>${title}</title><meta property="article:published_time" content="2026-09-23T12:00:00Z"></head><body><article><h1>${title}</h1><p>${text}</p></article></body></html>`;
+}
+const languages: Array<{ path: string; language: string | undefined }> = [];
 const server = http.createServer((req, res) => {
   const path = req.url ?? "";
+  languages.push({ path, language: req.headers["accept-language"] });
+  if (path === "/en/post" && /^zh/.test(req.headers["accept-language"] ?? "")) {
+    res.writeHead(307, { location: "/zh/post" });
+    return res.end();
+  }
   const found = Object.hasOwn(pages, path);
   res.writeHead(found ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
   res.end(found ? pages[path]!() : "");
@@ -113,7 +137,7 @@ test("promotions a feed rotates inside its posts are left out of the body", () =
 });
 
 test("a listing that links other articles in its teasers takes only the links that begin a line", () => {
-  // Axios Technology through Jina: each headline stands on its own line; its teaser links older stories inline.
+  // A news listing through Jina: each headline stands on its own line; its teaser links older stories inline.
   const md = [
     "### [Amodei critics target Trump with hit piece before White House dinner](https://example.org/2026/09/27/amodei)",
     "[![Image 3: Scoop](https://example.org/a.jpg)](https://example.org/2026/09/27/dinner)",
@@ -133,7 +157,7 @@ test("a listing that links other articles in its teasers takes only the links th
 });
 
 test("feed text that only teases the article is a summary: the page is fetched before judging", async () => {
-  const read = await fetchRss({ id: "test-feed", config: { feedUrl: `${site}/verge.xml` }, participation_mode: "editorial", cursor: null } as never, { force: true });
+  const read = await fetchRss({ id: "test-feed", config: { feedUrl: `${site}/teaser.xml` }, participation_mode: "editorial", cursor: null } as never, { force: true });
   const [teaser, whole] = read.candidates;
   assert.equal(teaser!.bodyStatus, "pending");
   assert.equal(teaser!.bodyText, null);
@@ -141,7 +165,7 @@ test("feed text that only teases the article is a summary: the page is fetched b
   assert.equal(whole!.bodyStatus, "ok");
   assert.ok(whole!.bodyText!.length > 1200);
   // Discussion sources only need what the feed says.
-  const signal = await fetchRss({ id: "test-feed", config: { feedUrl: `${site}/verge.xml` }, participation_mode: "hot_signal", cursor: null } as never, { force: true });
+  const signal = await fetchRss({ id: "test-feed", config: { feedUrl: `${site}/teaser.xml` }, participation_mode: "hot_signal", cursor: null } as never, { force: true });
   assert.equal(signal.candidates[0]!.bodyStatus, "ok");
 });
 
@@ -155,7 +179,7 @@ test("a source that declares its feed summary the body keeps a short one, in RSS
     const [declared] = await read(path, true);
     assert.deepEqual([declared!.bodyStatus, declared!.bodyText, declared!.excerpt], ["ok", note, note], `${path}: declared, it is the body`);
   }
-  assert.equal((await read("/verge.xml", true))[0]!.bodyStatus, "pending", "a teaser still asks for the page");
+  assert.equal((await read("/teaser.xml", true))[0]!.bodyStatus, "pending", "a teaser still asks for the page");
 });
 
 test("hidden page parts are dropped whole, and a news page's closing blocks are trimmed", () => {
@@ -171,7 +195,24 @@ test("hidden page parts are dropped whole, and a news page's closing blocks are 
   const chart = '<p><a href="https://example.org/chart.png"><img src="https://example.org/chart.png" alt="B200 prices"></a></p>';
   assert.ok(sanitizeBody(sanitizeBody(`<p>Prices doubled.</p>${chart}<p> </p>`)).includes('alt="B200 prices"'));
   assert.equal(sanitizeBody("<p>Text.</p><p> <br></p><p><a href=\"https://example.org/\"></a></p>"), "<p>Text.</p>");
-  // TechCrunch ends every article the same way.
+  // A newsletter wraps each picture in a link to its full size, with the picture inside a frame and icon buttons beside it.
+  const figure =
+    '<div class="captioned-image-container"><figure><a class="image-link" href="https://cdn.example.org/full.jpeg">' +
+    '<div class="image2-inset"><picture><source type="image/webp" srcset="https://cdn.example.org/w_424.webp 424w">' +
+    '<img src="https://cdn.example.org/w_1456.jpeg" width="500" height="625" alt=""></picture>' +
+    '<div class="image-link-expand"><div><button type="button"><svg viewBox="0 0 20 20"><path d="M2 7"></path></svg></button></div></div>' +
+    '</div></a><figcaption>Agents claimed an improvement.</figcaption></figure></div>';
+  const kept = sanitizeBody(`<p>Results below.</p>${figure}<p>Next section.</p>`, "https://example.org/p/post");
+  // The frame is not a paragraph: Markdown cannot hold one inside a link.
+  assert.equal(kept, '<p>Results below.</p><figure><a href="https://cdn.example.org/full.jpeg"><picture><img src="https://cdn.example.org/w_1456.jpeg" width="500" height="625" alt=""></picture></a>' +
+    "<figcaption>Agents claimed an improvement.</figcaption></figure><p>Next section.</p>");
+  assert.equal(sanitizeBody(kept, "https://example.org/p/post"), kept, "cleaning again keeps it");
+  assert.ok(sanitizeBody('<a href="https://example.org/t"><div>Title</div><div>Teaser</div></a>').includes("<p>Title</p><p>Teaser</p>"), "text in a link keeps its lines");
+  // Links with nothing to show inside still go, however deep: an empty frame, an icon, a tracking pixel.
+  for (const empty of ['<a href="https://example.org/a"><div><span> </span></div></a>', '<a href="https://example.org/b"><div><svg><path d="M1 1"></path></svg></div></a>', '<a href="https://example.org/c"><div><img src="https://example.org/px.gif" width="1" height="1"></div></a>']) {
+    assert.equal(sanitizeBody(`<p>Text.</p><p>${empty}</p>`), "<p>Text.</p>", empty);
+  }
+  // A news site ends every article the same way.
   const article = "<p>MongoDB’s shares dropped by more than 17%.</p><h2>Topics</h2><p>More on the deal.</p><p>Subscribe to our plan to get the API.</p>";
   assert.equal(trimTrailingChrome(`${article}<p>Topics</p><p>Subscribe for the industry’s biggest tech news</p><h2>Latest in AI</h2>`), article);
   assert.equal(trimTrailingChrome(article), article);
@@ -195,9 +236,49 @@ test("a time without a zone is read in the source's offset, in JSON lists and in
   assert.deepEqual([await detail(), await detail("+00:00")], ["2026-09-30T09:43:58.000Z", "2026-09-30T17:43:58.000Z"]);
 });
 
+test("posts embedded in a flight payload keep their own arrays and brackets inside strings", async () => {
+  const posts = await fetchJsonList({ id: "test-json", config: { url: `${site}/flight`, mode: "html_json_key", jsonKey: "posts", titlePaths: ["title"], urlTemplate: "https://example.org/blog/{slug}" } } as never);
+  assert.deepEqual(posts.map((c) => [c.title, c.url]), [["First [draft] post", "https://example.org/blog/first"], ["Second post", "https://example.org/blog/second"]]);
+});
+
 test("dates in yyyymmdd and in JSON-LD are read", async () => {
   const days = await fetchJsonList({ id: "test-json", config: { url: `${site}/days.json`, itemsPath: "data.list", titlePaths: ["ttl"], urlTemplate: "https://example.org/blog/view?seq={seq}", publishedAtPath: "day", publishedAtUnit: "yyyymmdd" } } as never);
-  assert.deepEqual(days.map((c) => c.publishedAt?.toISOString() ?? null), ["2026-09-22T00:00:00.000Z", null], "February 30 is no date");
+  assert.deepEqual(days.map((c) => c.publishedAt?.toISOString() ?? null), ["2026-09-21T16:00:00.000Z", null], "calendar days use the source offset; February 30 is no date");
   const got = await fetchDetail(`${site}/ld-post`, { id: "test-feed", config: { detail: { maxFetches: 20 } } } as never, { date: true, title: false, summary: false, body: false });
-  assert.equal(got.publishedAt?.toISOString(), "2026-09-24T00:00:00.000Z");
+  assert.equal(got.publishedAt?.toISOString(), "2026-09-23T16:00:00.000Z");
+  assert.equal(got.publicationTime, "2026-09-24");
+});
+
+test("a source's language reaches its listing, detail page and article body, which stay in that language", async () => {
+  const EN = "en-US,en;q=0.9";
+  const sent = (path: string) => languages.filter((hit) => hit.path === path).at(-1)?.language;
+  const listing = { url: `${site}/en/blog`, parseMode: "html", itemSelector: "a.row", titleSelector: "p", publishedAtSelector: "time", publishedAtUtcOffset: "+00:00" };
+  const web = source({ ...listing, acceptLanguage: EN, detail: { publishedAtSelector: "meta[property='article:published_time']" } });
+  const [item] = await fetchWebList(web);
+  assert.equal(sent("/en/blog"), EN);
+  assert.equal(item?.url, `${site}/en/post`, "the article keeps its own address");
+  const detail = await fetchDetail(item!.url, web, { date: true, title: false, summary: false, body: true });
+  assert.match(detail.body?.text ?? "", /^Agents now finish/);
+  const body = await extractFromUrl(item!.url, "article:fixture", pageRules({ acceptLanguage: EN }));
+  assert.match(body?.text ?? "", /^Agents now finish/);
+  assert.equal(languages.some((hit) => hit.path === "/zh/post"), false, "no read was sent to the translation");
+  await fetchRss(source({ feedUrl: `${site}/en/feed.xml`, acceptLanguage: EN }));
+  assert.equal(sent("/en/feed.xml"), EN);
+  await fetchJsonList(source({ url: `${site}/en/items.json`, titlePaths: ["title"], urlTemplate: "{raw:url}", acceptLanguage: EN }));
+  assert.equal(sent("/en/items.json"), EN);
+
+  // Without one, the default Chinese preference stays.
+  await fetchWebList(source(listing));
+  assert.match(sent("/en/blog") ?? "", /^zh-CN/);
+  assert.match((await extractFromUrl(item!.url, "article:fixture", pageRules({})))?.text ?? "", /^智能体/);
+});
+
+test("a source's language is an Accept-Language value, refused by kinds that read no pages", () => {
+  for (const kind of ["rss", "web_list", "json_list"] as const) {
+    assert.deepEqual(unsupportedConfig(kind, { acceptLanguage: "en-US,en;q=0.9" }), [], kind);
+    for (const acceptLanguage of ["", " ", 1, null, ["en"], "en\r\nx-injected: 1"]) {
+      assert.deepEqual(unsupportedConfig(kind, { acceptLanguage }), ["acceptLanguage"], `${kind} ${JSON.stringify(acceptLanguage)}`);
+    }
+  }
+  for (const kind of ["x_search", "mp_account", "external"] as const) assert.deepEqual(unsupportedConfig(kind, { acceptLanguage: "en" }), ["acceptLanguage"], kind);
 });

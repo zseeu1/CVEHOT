@@ -1,6 +1,7 @@
 // Share images (1200×630 PNG) for pages, items, reports, topics and events. Only public content
 // gets a card; anything else is a real 404.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { reportDateLabel } from "@aihot/contracts/site";
 import { CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import { beijingDate } from "@aihot/contracts/time";
 import { loadItemOgCard, loadItemShare } from "@aihot/backend/publication/og";
@@ -42,7 +43,7 @@ export function registerOg(app: FastifyInstance) {
 
   app.get("/og/pages/:file", async (req, reply) => {
     const name = (req.params as { file: string }).file.replace(/\.png$/, "");
-    const card = PAGES[name];
+    const card = Object.hasOwn(PAGES, name) ? PAGES[name] : undefined;
     if (!card || !(req.params as { file: string }).file.endsWith(".png")) return notFound(reply);
     return send(req, reply, card, 86400);
   });
@@ -83,7 +84,7 @@ export function registerOg(app: FastifyInstance) {
     if (!r) return notFound(reply);
     const count = r.sections.reduce((n, s) => n + s.items.length, 0);
     return send(req, reply, {
-      kicker: `${REPORT_NAMES[r.kind]} · ${r.key}`,
+      kicker: `${REPORT_NAMES[r.kind]} · ${reportDateLabel(r.kind, r.key)}`,
       title: r.lead?.title ?? r.title,
       subtitle: r.lead?.leadParagraph ?? r.overview,
       // A quiet day's issue (REPORTS.quiet) has nothing to count.

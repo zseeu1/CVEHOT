@@ -1,13 +1,15 @@
 // Feedback: content, optional email, page URL, one optional screenshot. The screenshot goes to the
 // internal Feishu chat and only its image key is stored (without that chat the file stays here). Abuse
-// control uses an unreadable source identifier (HMAC of client IP + UA family), per-source bans and a
-// per-minute limit.
-import { createHmac, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+// control uses an unreadable source identifier (HMAC of client IP + UA family), persistent rate
+// limits, temporary bans and exact-submission retry deduplication. Confirmed email abuse can be
+// paused by a moderator; unverified contact details never link automatic bans across sources.
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { config, credential } from "../config.ts";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
+import { audit } from "../audit.ts";
 import { serverModules } from "../modules.ts";
 import { feishuInternalEnabled, forwardFeedbackToFeishu } from "../notify/feishu.ts";
 
@@ -32,20 +34,40 @@ export function sniffImageType(data: Buffer): "image/png" | "image/jpeg" | "imag
   return null;
 }
 
+/** The key of both unreadable identifiers below. */
+const identifierSecret = () => credential("auth", "SESSION_SECRET") ?? "dev-feedback-secret";
+
 export function feedbackSourceHash(ip: string, userAgent: string): string {
-  const secret = credential("auth", "SESSION_SECRET") ?? "dev-feedback-secret";
   const uaFamily = (userAgent.match(/(Chrome|Safari|Firefox|Edg|MicroMessenger|Mobile|Android|iPhone|iPad|Mac OS X|Windows)/g) ?? []).slice(0, 4).join("/");
-  return createHmac("sha256", secret).update(`${ip}|${uaFamily}`).digest("base64url").slice(0, 24);
+  return createHmac("sha256", identifierSecret()).update(`${ip}|${uaFamily}`).digest("base64url").slice(0, 24);
 }
 
-const recent = new Map<string, number[]>();
-function rateLimit(source: string, perMinute = 5): void {
-  const now = Date.now();
-  const list = (recent.get(source) ?? []).filter((t) => now - t < 60_000);
-  if (list.length >= perMinute) throw new FeedbackRejected(429, "rate_limited", "提交太频繁，请稍后再试。", 60);
-  list.push(now);
-  recent.set(source, list);
-  if (recent.size > 5000) for (const [k, v] of recent) if (v.every((t) => now - t > 60_000)) recent.delete(k);
+/** An explicit moderator ban can follow a supplied email without storing it in the ban/audit log. */
+export function feedbackEmailKey(email: string): string {
+  return `email:${createHmac("sha256", identifierSecret()).update(email.trim().toLowerCase()).digest("base64url")}`;
+}
+
+const HOUR = 3600_000;
+const MAX_SUBMISSIONS = 3;
+const MAX_ATTEMPTS = 20;
+type Submission = { at: number; id: number; fingerprint: string };
+
+/** Expiry is enforced on reads; housekeeping only removes the no-longer-effective records. */
+export async function expireFeedbackBans(db: Db = sql, now = new Date(), keys?: string[]) {
+  const rows = await db<{ source_hash: string; reason: string | null; expires_at: Date }[]>`
+    DELETE FROM feedback_bans WHERE expires_at <= ${now} ${keys ? db`AND source_hash IN ${db(keys)}` : db``}
+    RETURNING source_hash, reason, expires_at`;
+  for (const row of rows) await audit("feedback-auto", "feedback.unban", `feedback-source:${row.source_hash}`, "临时封禁到期", row, null, { db });
+  return rows.count;
+}
+
+export async function pruneFeedbackSubmissionState(now: Date) {
+  return (await sql`DELETE FROM feedback_submission_state WHERE expires_at <= ${now}`).count;
+}
+
+/** A moderator's release also clears the rate window so the next report is not immediately banned. */
+export async function resetFeedbackSubmissionState(source: string, db: Db = sql) {
+  await db`DELETE FROM feedback_submission_state WHERE source_hash = ${source}`;
 }
 
 export interface FeedbackInput {
@@ -66,36 +88,87 @@ export async function submitFeedback(input: FeedbackInput): Promise<{ id: number
   const pageUrl = input.pageUrl?.trim().slice(0, 500) || null;
   const source = feedbackSourceHash(input.ip, input.userAgent);
   // A ban holds under every key the source is known by.
-  const keys = [source, ...serverModules().flatMap((m) => m.feedbackKeys?.(input.ip) ?? [])];
-  const [banned] = await sql`SELECT 1 FROM feedback_bans WHERE source_hash IN ${sql(keys)}`;
-  if (banned) throw new FeedbackRejected(403, "forbidden", "暂时无法提交反馈。");
-  rateLimit(source);
+  const keys = [source, ...serverModules().flatMap((m) => m.feedbackKeys?.(input.ip) ?? []), ...(email ? [feedbackEmailKey(email)] : [])];
+  // Check before decoding an image, then again under the per-source row lock below.
+  const activeBan = async (db: Db, now: Date) => {
+    const [ban] = await db<{ expires_at: Date | null }[]>`SELECT expires_at FROM feedback_bans
+      WHERE source_hash IN ${db(keys)} AND (expires_at IS NULL OR expires_at > ${now})
+      ORDER BY expires_at DESC NULLS FIRST LIMIT 1`;
+    if (!ban) return null;
+    return ban.expires_at
+      ? new FeedbackRejected(429, "rate_limited", "反馈提交过于频繁，已暂时暂停。请稍后再试，草稿会保留。", Math.max(1, Math.ceil((ban.expires_at.getTime() - now.getTime()) / 1000)))
+      : new FeedbackRejected(403, "forbidden", "暂时无法提交反馈。");
+  };
+  const banned = await activeBan(sql, new Date());
+  if (banned) throw banned;
 
-  let screenshotKey: string | null = null;
+  let mime: ReturnType<typeof sniffImageType> = null;
   if (input.screenshot) {
     // Some phones send JPEGs as image/jpg or with no type at all: the bytes decide.
-    const mime = sniffImageType(input.screenshot.data);
+    mime = sniffImageType(input.screenshot.data);
     if (!mime) throw new FeedbackRejected(400, "invalid_request", "截图需要是 PNG、JPG、WebP 或 GIF。");
     if (input.screenshot.data.length > 8 * 1024 * 1024) throw new FeedbackRejected(400, "invalid_request", "截图最大 8MB。");
     // The first bytes are not enough: a PNG signature followed by noise would be kept and offered to
     // Feishu again and again. Decoding the whole picture settles it (a long phone capture fits the cap).
     const decodes = await sharp(input.screenshot.data, { limitInputPixels: 60_000_000, failOn: "error" }).stats().then(() => true, () => false);
     if (!decodes) throw new FeedbackRejected(400, "invalid_request", "截图无法识别，请换一张图片。");
-    // Stored locally until it is forwarded (notify/feishu.ts), for good where there is no internal chat;
-    // the database keeps only an identifier.
-    // Forwarding or erasing one feedback removes its file, even if another used the same picture.
-    const name = `${randomUUID()}.${mime.split("/")[1]}`;
-    const dir = path.join(config.dataDir, "feedback-screenshots");
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, name), input.screenshot.data);
-    screenshotKey = `local:${name}`;
   }
-  const [row] = await sql<{ id: number }[]>`
-    INSERT INTO feedback (content, email, page_url, screenshot_key, source_hash, forward_error)
-    VALUES (${content}, ${email}, ${pageUrl}, ${screenshotKey}, ${source}, 'pending') RETURNING id`;
-  const id = row!.id;
-  void forwardFeedbackToFeishu(id).catch(() => {});
-  return { id };
+  // Preserve code and whitespace inside reports. Changed contact, page or screenshot is a new report.
+  const fingerprint = createHash("sha256").update(JSON.stringify([content, email, pageUrl,
+    input.screenshot ? createHash("sha256").update(input.screenshot.data).digest("hex") : null])).digest("hex");
+  let file: string | null = null;
+  try {
+    const result = await sql.begin(async (tx): Promise<{ id: number; fresh: boolean } | FeedbackRejected> => {
+      // Concurrent retries and blue/green API processes must share the same decision and saved ID.
+      // The upsert also prevents housekeeping from deleting an expired row before it is locked.
+      const [state] = await tx<{ attempts: number[]; submissions: Submission[] }[]>`
+        INSERT INTO feedback_submission_state (source_hash, expires_at) VALUES (${source}, ${new Date(Date.now() + HOUR)})
+        ON CONFLICT (source_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at RETURNING attempts, submissions`;
+      const now = Date.now();
+      const ban = await activeBan(tx, new Date(now));
+      if (ban) return ban;
+      await expireFeedbackBans(tx, new Date(now), keys);
+      const attempts = state!.attempts.filter(t => t > now - HOUR);
+      const submissions = state!.submissions.filter(s => s.at > now - HOUR);
+      const duplicate = submissions.find(s => s.fingerprint === fingerprint);
+      // A lost response or a few repeated clicks are safe retries. A continuing replay is still abuse.
+      if (attempts.length >= MAX_ATTEMPTS || (!duplicate && submissions.length >= MAX_SUBMISSIONS)) {
+        const until = new Date(now + HOUR);
+        const reason = duplicate ? "持续重复提交反馈" : "一小时内持续提交反馈";
+        await tx`INSERT INTO feedback_bans (source_hash, reason, created_by, expires_at)
+          VALUES (${source}, ${reason}, 'feedback-auto', ${until})
+          ON CONFLICT (source_hash) DO NOTHING`;
+        await audit("feedback-auto", "feedback.ban", `feedback-source:${source}`, reason, null, { expires_at: until.toISOString() }, { db: tx });
+        return new FeedbackRejected(429, "rate_limited", "反馈提交过于频繁，已暂停 1 小时。请稍后再试，草稿会保留。", 3600);
+      }
+      attempts.push(now);
+      await tx`UPDATE feedback_submission_state SET attempts = ${tx.json(attempts)}, submissions = ${tx.json(submissions)}, expires_at = ${new Date(now + HOUR)} WHERE source_hash = ${source}`;
+      if (duplicate) return { id: duplicate.id, fresh: false };
+      let screenshotKey: string | null = null;
+      if (input.screenshot && mime) {
+        const name = `${randomUUID()}.${mime.split("/")[1]}`;
+        const dir = path.join(config.dataDir, "feedback-screenshots");
+        await mkdir(dir, { recursive: true });
+        file = path.join(dir, name);
+        await writeFile(file, input.screenshot.data);
+        screenshotKey = `local:${name}`;
+      }
+      const [row] = await tx<{ id: number }[]>`
+        INSERT INTO feedback (content, email, page_url, screenshot_key, source_hash, forward_error)
+        VALUES (${content}, ${email}, ${pageUrl}, ${screenshotKey}, ${source}, 'pending') RETURNING id`;
+      const id = row!.id;
+      submissions.push({ id, at: now, fingerprint });
+      await tx`UPDATE feedback_submission_state SET submissions = ${tx.json(submissions)} WHERE source_hash = ${source}`;
+      return { id, fresh: true };
+    });
+    // Rejections are thrown after commit so their counters and temporary bans survive.
+    if (result instanceof FeedbackRejected) throw result;
+    if (result.fresh) void forwardFeedbackToFeishu(result.id).catch(() => {});
+    return { id: result.id };
+  } catch (error) {
+    if (file) await unlink(file).catch(() => {});
+    throw error;
+  }
 }
 
 /**

@@ -9,3 +9,5 @@
    例：原标题 "Analysis of CVE-2026-12345 exploitation chain" → "CVE-2026-12345 利用链分析"，不能写成 "某厂商修复 CVE-2026-12345"。
    例：原标题 "How attackers chained two bugs to escape the sandbox" + 正文明确是 Chrome → "攻击者如何串联两个漏洞逃逸 Chrome 沙箱"，不能只写成缺主体的"如何串联两个漏洞逃逸沙箱"。
 6. 编号与组件名一字不改：CVE-2026-12345 不缩写、不省略年份、不补零；版本号 2.4.49 不改写成"2.4.49 版本"。
+7. 本条的动作和背景里的旧通告要分清：原文把披露、修复写成过去的事（"上周已修复""Earlier this month we patched…"），本条是在讲利用、复现或再次提醒时，标题写分析、复现或提醒，把披露交代成此前的事；不能写成"发布补丁 / 官方修复 / 紧急通告"，否则读者会当成今天的新通告。只有原文明确补丁是现在才发布，才对那一项用对应动作。
+   例：正文 "Earlier this month Apache patched CVE-2026-12345; here is how the exploit chains" → "CVE-2026-12345 利用链复现：串起此前修复的两个缺陷"，不能写成 "Apache 紧急修复 CVE-2026-12345"。

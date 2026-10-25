@@ -1,4 +1,7 @@
-/** Copies text; in-app browsers without the async clipboard (WeChat and the like) fall back to a selection copy. */
+/**
+ * Copies text; in-app browsers without the async clipboard (WeChat and the like) fall back to a selection
+ * copy. Rejects when neither copies.
+ */
 export async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
@@ -7,7 +10,8 @@ export async function copyText(text: string): Promise<void> {
     ta.value = text;
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand("copy");
+    const copied = document.execCommand("copy");
     ta.remove();
+    if (!copied) throw new Error("copy failed");
   }
 }

@@ -2,6 +2,8 @@
 // 网页和后端都读它；改完重新构建（docker compose up --build）即可生效。
 // 域名不在这里：部署时用环境变量 SITE_URL 设置。
 
+import type { Founder } from "@aihot/contracts/site-config";
+
 /**
  * 日报、周报、月报什么时候出（北京时间，HH:mm）：日报收这个时间之前的 24 小时，周报在每个自然周之后的周一出，
  * 月报在每月 1 日出。排程、成刊时间窗口、缺期告警和所有提到时间的文案都读它（public/ 里的文件写占位
@@ -66,13 +68,15 @@ export const SITE = {
   footerNote: "由 AIHOT 开源框架驱动",
   /** 中国大陆网站的 ICP 备案号（选填），填了就显示在侧栏底部和“我的”页底部，并链接到工信部备案系统。 */
   icp: null as string | null,
+  /** 中国大陆网站的公安备案信息（选填），填了显示在侧栏底部和“我的”页底部。 */
+  psb: null as string | null,
   /** 源码的 GitHub 仓库地址（选填），填了就在侧栏底部和“我的”页底部显示“GitHub 开源”。 */
   github: "https://github.com/zseeu1/CVEHOT",
   /** 结构化数据里的网站运营者（搜索引擎用）。 */
   organization: {
     name: "CVEHOT",
     /** 创始人（选填）。 */
-    founder: null as null | { name: string; alternateName?: string; jobTitle?: string; description?: string; url?: string },
+    founder: null as Founder | null,
   },
   /** 抓取信源时报上的名字和版本（User-Agent 里用），不要冒用别的站。 */
   crawlerName: "CVEHOTBot/1.0",
@@ -110,6 +114,15 @@ export const POLICY = {
    */
   xPostIsFullText: true,
 } as const;
+
+/** 导航（电脑侧栏、手机底栏、“我的”页）。 */
+export const NAV = {
+  /**
+   * 不放进导航的引擎入口，目前只支持热点榜（"/hot"）和主题（"/topics"）。页面照样能打开；原来回到它的返回按钮和链接改回精选，
+   * 写 "/hot" 时首页也不放当前热点。
+   */
+  hidden: [] as Array<"/hot" | "/topics">,
+};
 
 /** 条目卡片和详情页上的几处说法和显示。 */
 export const ITEM_COPY = {
@@ -212,8 +225,6 @@ export const ALERTS = {
   usualFlow: null as string | null,
   /** worker 停了的告警里，怎么看它的日志。 */
   workerLogs: "看 worker 的日志（docker compose logs worker）",
-  /** 某家模型服务拒绝服务或额度用完时，告警里说哪些步骤停了；没写的服务用通用说法。 */
-  modelStops: {} as Record<string, string>,
 };
 
 /** 后台新建信源时的默认设置。 */

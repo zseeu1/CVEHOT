@@ -7,11 +7,10 @@
 import type { PgBoss } from "pg-boss";
 import { sql, type Db } from "../db.ts";
 import { extractArticleBody, pageFetchable } from "../content/extract.ts";
-import { analyzeArticle, AnalysisInterruptedError } from "../editorial/analyze.ts";
+import { analyzeArticle } from "../editorial/analyze.ts";
 import { isHistorical } from "../content/materials.ts";
 import { publishArticle } from "../publication/publish.ts";
-import { BudgetExceededError, ProviderRejectedError, ReceiptBusyError, ReceiptUnknownError } from "../providers/receipts.ts";
-import { ModelOutputError } from "../providers/llm.ts";
+import { BudgetExceededError, failedReceiptId, failureKind } from "../providers/receipts.ts";
 import { enqueue, QUEUES, shutdownSignal, work } from "./queue.ts";
 
 /** Minutes to wait after the n-th failed attempt; one more failure after the last ends in "failed". */
@@ -60,6 +59,11 @@ async function route(articleId: string, db: Db): Promise<Route | null> {
  */
 const PRIORITY = { live: 0, liveSignal: -1, history: -2 } as const;
 
+/** A grouping job's place in that order, for repairs and regroups as for the first queueing. */
+export function groupingPriority(a: { signal: boolean; historical: boolean }): number {
+  return a.historical ? PRIORITY.history : a.signal ? PRIORITY.liveSignal : PRIORITY.live;
+}
+
 /**
  * The one way to hand an article to processing. `attemptTag` makes an explicit re-evaluation a new
  * (paid) request; the same tag reuses its receipt. With `db`, the job commits with the caller's write.
@@ -78,11 +82,20 @@ export async function queueProcessing(articleId: string, opts: { step?: Step; at
   const attemptTag = queued.processing_attempt_tag ?? undefined;
   if (step === "extract") return enqueue(QUEUES.extractBody, { articleId }, { singletonKey: articleId, priority: r.historical ? PRIORITY.history : PRIORITY.live }, opts.db);
   if (r.signal && !attemptTag) {
-    return enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: r.historical ? PRIORITY.history : PRIORITY.liveSignal }, opts.db);
+    return enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: groupingPriority(r) }, opts.db);
   }
   const tagged = !!attemptTag;
   return enqueue(QUEUES.analyze, tagged ? { articleId, attemptTag } : { articleId },
     { singletonKey: tagged ? `manual:analyze:${articleId}:${attemptTag}` : articleId, priority: r.historical ? PRIORITY.history : PRIORITY.live }, opts.db);
+}
+
+/**
+ * Whether processed material goes on to event grouping: an editorial report its analysis passed
+ * (history too, which groupArticle settles without founding events), or a discussion post while it is
+ * news. Everything else is finished once processed, and its grouping stays pending.
+ */
+export function needsGrouping(m: { participationMode: string; historical: boolean; relevance?: string | null }): boolean {
+  return m.participationMode === "editorial" ? m.relevance === "pass" : m.participationMode === "hot_signal" && !m.historical;
 }
 
 /**
@@ -96,7 +109,7 @@ export async function settleNonEditorial(articleId: string): Promise<{ group: bo
     RETURNING s.participation_mode, a.backfill, a.published_at, a.discovered_at`;
   if (!row) return { group: false };
   await publishArticle(articleId);
-  return { group: row.participation_mode === "hot_signal" && !isHistorical(row) };
+  return { group: needsGrouping({ participationMode: row.participation_mode, historical: isHistorical(row) }) };
 }
 
 async function processingInput(articleId: string) {
@@ -124,7 +137,7 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
   if (row.participation_mode !== "editorial") {
     // Normally queued straight for grouping (queueProcessing); an explicit re-evaluation lands here.
     const { group } = await settleNonEditorial(articleId);
-    if (group) await enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: PRIORITY.liveSignal });
+    if (group) await enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: groupingPriority({ signal: true, historical: row.historical }) });
     return { state: "skipped" };
   }
   try {
@@ -137,16 +150,15 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
     }
     if (result.stale) return { state: "stale" }; // the newer revision has its own job
     await publishArticle(articleId);
-    // History still completes the identity gate; groupArticle confirms it without a model call.
-    if (result.output.relevance === "pass") await enqueue(QUEUES.group, { articleId }, { singletonKey: articleId, priority: row.historical ? PRIORITY.history : PRIORITY.live });
+    if (needsGrouping({ participationMode: row.participation_mode, historical: row.historical, relevance: result.output.relevance })) await enqueue(QUEUES.group, { articleId }, { singletonKey: articleId, priority: groupingPriority({ signal: false, historical: row.historical }) });
     await sql`UPDATE articles SET processing_attempts = 0, processing_retry_at = NULL, processing_queued_at = NULL
               WHERE id = ${articleId} AND revision = ${row.revision}`;
     return { state: result.output.relevance };
   } catch (error) {
-    if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
-    if (error instanceof ReceiptUnknownError) {
+    if (shutdownSignal.signal.aborted) throw error;
+    if (failureKind(error) === "unknown") {
       // The provider may have billed this request: stop; ops.recover releases it once and requeues the article.
-      await sql`UPDATE articles SET processing_state = 'failed', processing_error = ${`receipt ${error.receiptId} outcome unknown`}
+      await sql`UPDATE articles SET processing_state = 'failed', processing_error = ${`receipt ${failedReceiptId(error)} outcome unknown`}
                 WHERE id = ${articleId} AND revision = ${row.revision}`;
       return { state: "unknown-receipt" };
     }
@@ -158,9 +170,10 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
 async function afterFailure(articleId: string, revision: number, error: unknown): Promise<{ state: string; retryAt?: Date }> {
   // Let pg-boss retry this job after restart, reusing settled receipts. A deploy is not an article
   // failure and must neither consume processing_attempts nor turn an incomplete chain terminal.
-  if (error instanceof AnalysisInterruptedError || shutdownSignal.signal.aborted) throw error;
+  if (shutdownSignal.signal.aborted) throw error;
   const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-  if (error instanceof ReceiptBusyError || error instanceof BudgetExceededError) {
+  const kind = failureKind(error);
+  if (kind === "busy" || kind === "budget") {
     // Not the article's fault: the same request is in flight, or the budget window is full.
     const seconds = error instanceof BudgetExceededError ? error.retryAfterSeconds : 60;
     const retryAt = new Date(Date.now() + seconds * 1000);
@@ -171,8 +184,8 @@ async function afterFailure(articleId: string, revision: number, error: unknown)
   const [a] = await sql<{ processing_attempts: number }[]>`SELECT processing_attempts FROM articles WHERE id = ${articleId} AND revision = ${revision}`;
   if (!a) return { state: "stale" };
   const attempts = a.processing_attempts + 1;
-  const refused = error instanceof ProviderRejectedError && !error.retryable;
-  const exhausted = attempts > RETRY_MINUTES.length || (error instanceof ModelOutputError && attempts >= MAX_OUTPUT_FAILURES);
+  const refused = kind === "refused";
+  const exhausted = attempts > RETRY_MINUTES.length || (kind === "unusable" && attempts >= MAX_OUTPUT_FAILURES);
   if (refused || exhausted) {
     await sql`UPDATE articles SET processing_state = 'failed', processing_error = ${message}, processing_attempts = ${attempts},
                 processing_retry_at = NULL, processing_queued_at = NULL WHERE id = ${articleId} AND revision = ${revision}`;
@@ -245,7 +258,7 @@ export async function sweepUnprocessed(): Promise<{ enqueued: number }> {
  * The receipts of an article's analysis: an unknown outcome on any of them stops the article
  * ("failed"). Extraction never does: it retries, then judges the article on what it has.
  */
-const ARTICLE_STEPS = new Set(["prefilter_article", "score_article", "structure_article", "understand_article", "summarize_article"]);
+const ARTICLE_STEPS = new Set(["prefilter_article", "score_article", "structure_article", "understand_article", "summarize_article", "mend_wording"]);
 
 /**
  * After a receipt is released (operations/recover.ts), the article that stopped on it goes straight

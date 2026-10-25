@@ -25,7 +25,7 @@ test("recall preserves window, live-story, membership and latest-analysis eviden
     await sql`INSERT INTO articles (id, source_id, identity_key, url, title, discovered_at, timeline_at, published_at)
       VALUES (${id}, ${T}, ${id}, ${`https://example.org/${id}`}, ${title},
         now() - CASE WHEN ${scenario} = 'old-discovery' THEN interval '15 days'
-          WHEN ${scenario} = 'boundary' THEN interval '14 days'
+          WHEN ${scenario} = 'boundary' THEN interval '14 days' + interval '1 minute'
           WHEN ${scenario} = 'recent-discovery' THEN interval '14 days' - interval '1 minute' ELSE interval '1 day' END,
         now(), now() - interval '1 year')`;
     const [fact] = await sql<{ id: number }[]>`INSERT INTO facts (public_id, story_id, title)

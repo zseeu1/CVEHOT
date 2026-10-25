@@ -37,11 +37,12 @@ after(async () => {
 });
 
 let n = 0;
-/** A selected article with full text and a summary. */
+/** A selected article with full text and a summary, found and published a minute ago: a rolling window that ends at the reader's clock holds it. */
 async function article(): Promise<string> {
   n += 1;
+  const minuteAgo = new Date(Date.now() - 60_000);
   const { articleId } = await upsertMaterial({
-    sourceId: SOURCE, url: `https://example.com/${T}-${n}`, title: `Test ${n}`, bodyText: BODY, bodyHtml: `<p>${BODY}</p>`, bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
+    sourceId: SOURCE, url: `https://example.com/${T}-${n}`, title: `Test ${n}`, bodyText: BODY, bodyHtml: `<p>${BODY}</p>`, bodyStatus: "ok", via: "fetch", publishedAt: minuteAgo, discoveredAt: minuteAgo,
   });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, reason_zh, score, selected)
             VALUES (${articleId}, 1, 'rule', 'pass', 'advisory', ${`标题${n}-${T}`}, ${`SUMMARY-${n}-${T}`}, '理由', 90, true)`;
@@ -63,6 +64,34 @@ async function get(url: string, headers: Record<string, string> = {}) {
   const res = await app.inject({ method: "GET", url, headers });
   return { status: res.statusCode, body: res.body, etag: res.headers.etag as string | undefined };
 }
+
+// Failure modes: a revoked score falls back to the erroneous model score, zero is treated as
+// missing, republishing loses a correction, invalid scores or stale edits alter public state,
+// or removing a correction cannot restore the saved model result without paying again.
+test("manual score corrections, including no score, survive every public projection and rebuild", async () => {
+  const id = await article();
+  await sql`UPDATE articles SET grouping_status = 'complete' WHERE id = ${id}`;
+  await publishArticle(id, released());
+  assert.equal(JSON.parse((await get(`/api/site/items/${id}`)).body).score, 90);
+  for (const score of [-1, 101, "0", Number.NaN]) {
+    await assert.rejects(overrideFields(id, { fields: { score }, reason: "invalid score", version: 0 }, "test"));
+  }
+  await overrideFields(id, { fields: { score: null, selected: false }, reason: "unsupported launch revoked", version: 0 }, "test");
+  await publishArticle(id);
+  const detail = JSON.parse((await get(`/api/site/items/${id}`)).body);
+  assert.equal(detail.score, null);
+  assert.equal(detail.selected, false);
+  const items = JSON.parse((await get(`/api/v1/items?mode=all&q=${encodeURIComponent(detail.title)}&limit=10`)).body).items;
+  assert.equal(items.find((i: { id: string }) => i.id === id)?.score, null);
+  assert.equal((await loadItemShare(id))?.score, null);
+  assert.ok(!(await get("/feed.xml")).body.includes(id), "revoked selection leaves RSS");
+  assert.equal(Number((await sql`SELECT score FROM analyses WHERE article_id = ${id}`)[0]!.score), 90, "the paid result stays intact");
+  await assert.rejects(overrideFields(id, { fields: { score: 99 }, reason: "stale correction", version: 0 }, "test"));
+  await overrideFields(id, { fields: { score: 0 }, reason: "verified zero score", version: 1 }, "test");
+  assert.equal(JSON.parse((await get(`/api/site/items/${id}`)).body).score, 0);
+  await overrideFields(id, { fields: {}, clear: ["score"], reason: "restore saved scoring", version: 2 }, "test");
+  assert.equal(JSON.parse((await get(`/api/site/items/${id}`)).body).score, 90);
+});
 
 // Export failures to guard before changing conversion: flattened table relationships, invented
 // headings/merged cells, lost numeric units, and full text leaking after a licence reduction.
@@ -339,7 +368,8 @@ test("unresolved selection does not delay a withdrawal or its sync watermark", a
   // This snapshot already includes the withdrawal; completing y adds only y afterwards.
   const snapshot = JSON.parse((await get("/api/v1/selected/snapshot?fields=minimal&limit=1000")).body) as { cursor: string };
   await sql`UPDATE articles SET grouping_status = 'complete', grouped_at = now() WHERE id = ${y}`;
-  await publishArticle(y);
+  // Completed a minute ago: the changes read at the reader's clock include it even when the VM's clock steps back.
+  await publishArticle(y, { now: new Date(Date.now() - 60_000) });
   const changes = JSON.parse((await get(`/api/v1/selected/changes?cursor=${encodeURIComponent(snapshot.cursor)}&limit=100`)).body) as {
     changes: Array<{ op: string; id?: string; item?: { id: string } }>;
   };
@@ -399,6 +429,17 @@ test("v1 story matches the website's content and fallback ordering", async () =>
     source: { name: r.source.name, firstParty: r.source.firstParty }, publishedAt: r.publishedAt, links: { aihot: `${config.siteUrl}/items/${r.id}` } })));
 });
 
+// An event's public id is kept by search engines and installed clients: once merged, it must lead to the
+// event that took it in, through a relative Location that keeps the reader on the domain they asked.
+test("a merged event's old public id answers 308 to the surviving event", async () => {
+  const current = await storyFor(await article());
+  const merged = randomUUID();
+  await sql`INSERT INTO story_aliases (public_id, story_id) SELECT ${merged}, id FROM stories WHERE public_id = ${current}`;
+  const res = await app.inject({ method: "GET", url: `/api/v1/stories/${merged}` });
+  assert.equal(res.statusCode, 308, "a merged public id is a permanent redirect, not a 404");
+  assert.equal(res.headers.location, `/api/v1/stories/${current}`, "relative Location to the surviving event");
+});
+
 test('event neighbors disappear when their last readable evidence is withdrawn', async () => {
   const id = await article();
   const neighborId = await article();
@@ -427,6 +468,9 @@ test("unchanged republishing preserves freshness, while URL-only changes still r
   assert.deepEqual({ ...await state() }, { ...before }, "no new freshness timestamp or revision for identical content");
   assert.equal((await sql`SELECT max(seq) AS seq FROM selected_ledger WHERE article_id = ${id}`)[0]!.seq, ledger!.seq);
 
+  // Last refreshed a minute ago: the refresh shows even when the VM's clock steps back between the two publications.
+  await sql`UPDATE publications SET updated_at = updated_at - interval '1 minute' WHERE article_id = ${id}`;
+  const aged = await state();
   const url = `https://example.com/${T}-corrected`;
   await sql`UPDATE articles SET url = ${url} WHERE id = ${id}`;
   const result = await publishArticle(id);
@@ -434,7 +478,7 @@ test("unchanged republishing preserves freshness, while URL-only changes still r
   assert.equal(result!.ledger, "upsert", "the public URL change is still recorded for sync clients");
   const changed = await state();
   assert.equal(changed.url, url);
-  assert.ok(changed.updated_at >= before.updated_at);
+  assert.ok(changed.updated_at > aged.updated_at);
   assert.equal(changed.revision, before.revision + 1);
 });
 

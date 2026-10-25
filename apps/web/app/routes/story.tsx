@@ -6,9 +6,10 @@ import type { StoryDetail, StoryReportView } from "@aihot/contracts/site";
 import { SITE } from "@aihot/site";
 import { cachedPage, loadOr404 } from "../lib/api.server";
 import { pageReuse } from "../lib/page-reuse";
-import { breadcrumbLd, pageMeta, titled } from "../lib/seo";
-import { beijingDate, beijingTime } from "@aihot/contracts/time";
-import { monthDay, monthDayTime, relativeTime } from "../lib/format";
+import { breadcrumbLd, pageMeta, storyLd, titled } from "../lib/seo";
+import { beijingTime } from "@aihot/contracts/time";
+import { byBeijingDay, monthDay, monthDayTime, relativeTime } from "../lib/format";
+import { useCurrentSection } from "../lib/motion";
 import { HeatChart } from "../features/story/HeatChart";
 import { sessionCache } from "../lib/session-cache";
 import { isReload } from "../lib/restore";
@@ -17,10 +18,13 @@ import { PillTabs } from "../components/ui/Tabs";
 import { Select } from "../components/ui/Controls";
 import { IconArrowLeft, IconChevronRight, IconClock, IconDoc, IconUsers } from "../components/icons";
 import { PhoneBar } from "../components/shell/PhoneBar";
+import { inNav, navUp } from "../components/shell/nav";
 import type { Screen } from "../components/shell/screens";
 import { loadParts } from "../site-modules";
 
-export const handle: Screen = { home: "hot" };
+// Stories are reached from the hot board, as long as the site shows it.
+const UP = navUp("/hot");
+export const handle: Screen = { home: UP.tab };
 
 const PARTS = await loadParts((m) => m.storyPage);
 export { pageHeaders as headers } from "../lib/api.server";
@@ -36,11 +40,14 @@ export function meta({ loaderData }: Route.MetaArgs) {
   const s = loaderData.story;
   return pageMeta({
     title: s.title,
-    description: (s.digest ?? s.summary)?.slice(0, 150) ?? `${s.sourceCount} 个报道来源 ${s.reportCount} 篇报道，完整时间线与最新进展。`,
+    description: (s.digest ?? s.summary ?? s.excerpt?.text)?.slice(0, 150) ?? `${s.sourceCount} 个报道来源 ${s.reportCount} 篇报道，完整时间线与最新进展。`,
     path: `/story/${s.publicId}`,
     image: `/og/stories/${s.publicId}.png`,
     type: "article",
-    jsonLd: breadcrumbLd([{ name: SITE.name, path: "/" }, { name: "热点榜", path: "/hot" }, { name: s.title, path: `/story/${s.publicId}` }]),
+    jsonLd: [
+      storyLd(s),
+      breadcrumbLd([{ name: SITE.name, path: "/" }, ...UP.crumbs, { name: s.title, path: `/story/${s.publicId}` }]),
+    ],
   });
 }
 
@@ -52,7 +59,6 @@ const STATUS = {
 
 // Section anchors keep the old page's ids so shared links still land in the right place.
 const SECTIONS = { overview: "event-overview", reports: "event-reports", heat: "event-heat" } as const;
-type SectionKey = keyof typeof SECTIONS;
 
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -83,31 +89,6 @@ function RailCard({ title, right, children, className = "" }: { title: ReactNode
       <div className="mt-2">{children}</div>
     </section>
   );
-}
-
-/** Highlights the section nav entry whose section is under the sticky bar. */
-function useActiveSection(keys: SectionKey[]): [SectionKey, (k: SectionKey) => void] {
-  const [active, setActive] = useState<SectionKey>("overview");
-  useEffect(() => {
-    const els = keys.map((k) => document.getElementById(SECTIONS[k])).filter((e): e is HTMLElement => !!e);
-    const onScroll = () => {
-      let cur: SectionKey = keys[0]!;
-      for (const [i, el] of els.entries()) if (el.getBoundingClientRect().top <= 96) cur = keys[i]!;
-      // The last section may never reach the bar; at the bottom of the page it is the one being read.
-      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = keys[keys.length - 1]!;
-      setActive(cur);
-    };
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [keys.join()]);
-  const go = (k: SectionKey) => {
-    const el = document.getElementById(SECTIONS[k]);
-    if (!el) return;
-    el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-    history.replaceState(history.state, "", `#${SECTIONS[k]}`);
-  };
-  return [active, go];
 }
 
 /** One report on the story timeline: time, source and marks, title, a summary that opens on demand. */
@@ -175,8 +156,8 @@ export default function StoryPage() {
   const status = STATUS[story.status];
   // A settled story nobody watched (history pages) has no heat to explain or chart.
   const observed = story.status !== "settled" || story.heat.length > 0 || story.whyHot.participants48h > 0 || story.whyHot.rank !== null;
-  const sectionKeys: SectionKey[] = observed ? ["overview", "reports", "heat"] : ["overview", "reports"];
-  const [activeSection, goSection] = useActiveSection(sectionKeys);
+  const sections = observed ? [SECTIONS.overview, SECTIONS.reports, SECTIONS.heat] : [SECTIONS.overview, SECTIONS.reports];
+  const [reading, goSection] = useCurrentSection(sections);
   const counts = {
     all: story.timeline.length,
     official: story.timeline.filter((r) => r.source.firstParty).length,
@@ -185,14 +166,7 @@ export default function StoryPage() {
   const days = useMemo(() => {
     const list = story.timeline.filter((r) => (filter === "official" ? r.source.firstParty : filter === "selected" ? r.selected : true));
     const sorted = [...list].sort((a, b) => (order === "desc" ? Date.parse(b.publishedAt) - Date.parse(a.publishedAt) : Date.parse(a.publishedAt) - Date.parse(b.publishedAt)));
-    const out: Array<{ day: string; rows: StoryReportView[] }> = [];
-    for (const r of sorted) {
-      const d = beijingDate(r.publishedAt);
-      const last = out[out.length - 1];
-      if (last && last.day === d) last.rows.push(r);
-      else out.push({ day: d, rows: [r] });
-    }
-    return out;
+    return byBeijingDay(sorted, (r) => r.publishedAt);
   }, [story.timeline, filter, order]);
   const developments = useMemo(() => [...story.developments].sort((a, b) =>
     order === "desc" ? Date.parse(b.firstReportAt) - Date.parse(a.firstReportAt) : Date.parse(a.firstReportAt) - Date.parse(b.firstReportAt)
@@ -207,15 +181,15 @@ export default function StoryPage() {
         : null;
   const showOfficial = () => {
     setFilter("official");
-    goSection("reports");
+    goSection(SECTIONS.reports);
   };
 
   return (
     <div className="mx-auto max-w-[var(--page-max-reading)] pb-10">
-      <PhoneBar back={{ to: "/hot", label: "热点" }} title={story.title} />
+      <PhoneBar back={{ to: UP.to, label: UP.back }} title={story.title} />
       <nav aria-label="位置" className="hidden items-center gap-2.5 pb-5 pt-4 text-[12px] text-ink-4 lg:flex">
-        <Link to="/hot" className="inline-flex items-center gap-1.5 transition-colors hover:text-ink">
-          <IconArrowLeft size={15} /> 热点榜
+        <Link to={UP.to} className="inline-flex items-center gap-1.5 transition-colors hover:text-ink">
+          <IconArrowLeft size={15} /> {UP.name}
         </Link>
         <span className="h-3 w-px bg-line-strong" aria-hidden="true" />
         <span>事件详情</span>
@@ -250,12 +224,12 @@ export default function StoryPage() {
           size="sm"
           layoutId="story-sections"
           label="事件内容导航"
-          active={activeSection}
-          onSelect={(k) => goSection(k as SectionKey)}
+          active={reading ?? SECTIONS.overview}
+          onSelect={goSection}
           items={[
-            { key: "overview", label: "事件概览" },
-            { key: "reports", label: "报道时间线", count: story.reportCount },
-            ...(observed ? [{ key: "heat", label: "热度走势" }] : []),
+            { key: SECTIONS.overview, label: "事件概览" },
+            { key: SECTIONS.reports, label: "报道时间线", count: story.reportCount },
+            ...(observed ? [{ key: SECTIONS.heat, label: "热度走势" }] : []),
           ]}
         />
       </div>
@@ -347,7 +321,7 @@ export default function StoryPage() {
             {days.length === 0 ? (
               <p className="py-10 text-center text-[13px] text-ink-4">这个筛选下没有报道。</p>
             ) : (
-              days.map(({ day, rows }) => (
+              days.map(({ day, entries: rows }) => (
                 <div key={day}>
                   <div className="pb-0.5 pt-5 text-[14px] font-semibold text-ink">{monthDay(day)}</div>
                   <ol>
@@ -392,13 +366,13 @@ export default function StoryPage() {
           {observed && (
             <RailCard title="为什么热">
               <p className="text-[12.5px] leading-[1.75] text-ink-3">
-                过去 48 小时，已观察到 <b className="num font-semibold text-ink">{story.whyHot.participants48h}</b> 个独立主体参与讨论或报道，最近 6 小时新增{" "}
+                过去 48 小时，有 <b className="num font-semibold text-ink">{story.whyHot.participants48h}</b> 个账号或机构报道、讨论了这件事，最近 6 小时新增{" "}
                 <b className="num font-semibold text-ink">{story.whyHot.newParticipants6h}</b> 个。
               </p>
-              {!story.whyHot.observationComplete && <p className="mt-2 text-[12px] leading-relaxed text-ink-4">部分信源观测不完整，以上仅为已观察到的参与。</p>}
+              {!story.whyHot.observationComplete && <p className="mt-2 text-[12px] leading-relaxed text-ink-4">这段时间有些来源没能完整读到，实际参与的可能更多。</p>}
               <p className="mt-2 text-[12px] text-ink-4">
                 <span className="num">{story.whyHot.recentReports24h}</span> 篇近期报道
-                {story.whyHot.rank && (
+                {story.whyHot.rank && inNav("/hot") && (
                   <>
                     <span className="mx-1">·</span>
                     <Link to="/hot" className="text-accent hover:underline">

@@ -16,8 +16,8 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { promptFromText } from "@aihot/backend/editorial/prompts";
 import { DIGEST_PROMPT_VERSION, DIGEST_SAMPLING, DIGEST_SYSTEM, DigestSchema, buildStoryDigestInput } from "@aihot/backend/events/digest";
 import { sha256 } from "@aihot/backend/lib/ids";
-import { ModelOutputError, chatJson } from "@aihot/backend/providers/llm";
-import { ReceiptUnknownError, completeReceipt } from "@aihot/backend/providers/receipts";
+import { chatJson } from "@aihot/backend/providers/llm";
+import { completeReceipt, failedReceiptId } from "@aihot/backend/providers/receipts";
 import { digestReports } from "@aihot/backend/publication/story-evidence";
 import {
   caseFromStory,
@@ -111,7 +111,7 @@ async function evaluate() {
     models: {},
   };
   for (const model of models) {
-    const started = Date.now();
+    const started = performance.now();
     const tasks = rows.flatMap((row) => prompts.map((prompt) => ({ row, prompt })));
     const results = await pmap(tasks, concurrency, async ({ row, prompt }) => {
       const input = toDigestInput(row);
@@ -136,7 +136,7 @@ async function evaluate() {
         receiptId = res.receiptId;
         reused = res.reused;
       } catch (failure) {
-        receiptId = failure instanceof ModelOutputError || failure instanceof ReceiptUnknownError ? failure.receiptId : null;
+        receiptId = failedReceiptId(failure);
         error = String(failure).slice(0, 500);
       }
       const call: DigestCall = {
@@ -164,7 +164,7 @@ async function evaluate() {
     const summary = {
       live: await summarize("live"),
       ...(values.system ? { candidate: await summarize("candidate") } : {}),
-      wallSeconds: Math.round((Date.now() - started) / 1000),
+      wallSeconds: Math.round((performance.now() - started) / 1000),
     };
     console.log(JSON.stringify({ model, ...summary }));
     report.models[model] = {

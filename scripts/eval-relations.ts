@@ -8,18 +8,17 @@ import { parseArgs } from "node:util";
 import { REPO_ROOT } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, pairUser } from "@aihot/backend/events/relate";
-import { ModelOutputError, chatJson } from "@aihot/backend/providers/llm";
-import { completeReceipt } from "@aihot/backend/providers/receipts";
+import { chatJson } from "@aihot/backend/providers/llm";
+import { completeReceipt, failedReceiptId } from "@aihot/backend/providers/receipts";
 import {
   DEFAULT_RELATION_THRESHOLDS,
   parseRelationGoldJsonl,
   relationMetrics,
-  sampleRelationGold,
   storyTieMetrics,
   toReportView,
   type RelationPrediction,
 } from "./eval-relations-core.ts";
-import { evalModels, pmap, positiveInt, safeReportNamePart, usageFor } from "./eval-tools.ts";
+import { evalModels, pmap, positiveInt, safeReportNamePart, sampleCases, usageFor } from "./eval-tools.ts";
 
 const { values } = parseArgs({
   options: {
@@ -46,14 +45,13 @@ async function main() {
   }
 
   const rows = parseRelationGoldJsonl(readFileSync(path.resolve(REPO_ROOT, values.gold!), "utf8"));
-  const sample = sampleRelationGold(rows, { split: values.split, n, seed });
-  if (!sample.length) throw new Error(`no cases for split ${values.split}`);
+  const sample = sampleCases(rows, { split: values.split!, n, seed });
 
   const models = await evalModels(values.models, "groupReview");
 
   const report: Record<string, unknown> = {};
   for (const model of models) {
-    const started = Date.now();
+    const started = performance.now();
     // Distinct gold cases can render identical prompts. Share their result, including failures,
     // so a cold run scores the same cases as a cached run and never retries a pair within one run.
     const requests = new Map<string, ReturnType<typeof chatJson<typeof PairSchema>>>();
@@ -84,8 +82,7 @@ async function main() {
         const res = await request;
         return { row, out: res.data, receiptId: res.receiptId, reused: shared || res.reused, error: null as string | null };
       } catch (error) {
-        const receiptId = error instanceof ModelOutputError ? error.receiptId : null;
-        return { row, out: null, receiptId, reused: shared, error: String(error).slice(0, 300) };
+        return { row, out: null, receiptId: failedReceiptId(error), reused: shared, error: String(error).slice(0, 300) };
       }
     });
 
@@ -113,7 +110,7 @@ async function main() {
       macroF1: metrics.macroF1,
       reused: results.filter((result) => result.reused).length,
       ...usage,
-      wallSeconds: Math.round((Date.now() - started) / 1000),
+      wallSeconds: Math.round((performance.now() - started) / 1000),
     };
     const storyThresholds = thresholds.map((threshold) => storyTieMetrics(predictions, threshold, sample.length));
     console.log(JSON.stringify(summary));

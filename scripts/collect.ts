@@ -5,9 +5,9 @@ import { stopBoss } from "@aihot/backend/jobs/queue";
 import { collectSource } from "@aihot/backend/sources/collect";
 
 for (const id of process.argv.slice(2)) {
-  const started = Date.now();
+  const started = performance.now();
   const r = await collectSource(id, { force: true });
-  console.log(JSON.stringify({ ...r, ms: Date.now() - started }));
+  console.log(JSON.stringify({ ...r, ms: Math.round(performance.now() - started) }));
 }
 await stopBoss();
 await closeDb();

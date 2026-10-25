@@ -5,7 +5,7 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { loadPool } from "@aihot/backend/publication/pool";
+import { loadPool, publicMatchCondition, searchTerms } from "@aihot/backend/publication/pool";
 
 const T = `relevance-${tag()}`;
 const now = new Date("2026-01-01T12:00:00Z");
@@ -72,4 +72,35 @@ test("relevance retains combined filters and literal LIKE characters", async () 
   await add("literal", "qx%_\\z", "");
   await add("wildcard-lookalike", "qx-anything-z", "");
   assert.deepEqual((await loadPool(query("qx%_\\z"))).items.map(item => item.id), [id("literal")]);
+});
+
+test("search terms split where Han meets a Latin word, not before digits", () => {
+  assert.deepEqual(searchTerms("多模态RAG"), ["多模态", "rag"]);
+  assert.deepEqual(searchTerms("claude code更新 gpt-5 deepseek v4"), ["claude", "code", "更新", "gpt-5", "deepseek", "v4"]);
+  assert.deepEqual(searchTerms("v4版本"), ["v4", "版本"]);
+  assert.deepEqual(searchTerms("10月"), ["10月"]);
+});
+
+test("public search needs a plain Latin term to start a word in the body", async () => {
+  await add("kv-word", "", "a kv pipeline");
+  await add("kv-han", "", "多模态kv系统");
+  await add("kv-inside", "", "an mkv file");
+  await add("kv-direct", "mkv", "");
+  const found = async (q: string) => (await sql<{ article_id: string }[]>`
+    SELECT p.article_id FROM publications p WHERE p.source_id = ${T} ${publicMatchCondition(searchTerms(q))}`)
+    .map(r => r.article_id).sort();
+  assert.deepEqual(await found("kv"), ["kv-direct", "kv-han", "kv-word"].map(id).sort());
+});
+
+test("equal relevance ranks a seated selected item, then the higher score, then the newest", async () => {
+  await add("tie-new", "wq", "", { age: 1 });
+  await add("tie-score", "wq", "", { age: 30 });
+  await add("tie-selected", "wq", "", { age: 50 });
+  await add("tie-unseated", "wq", "", { age: 40 });
+  await sql`UPDATE publications SET score = 80 WHERE article_id = ${id("tie-score")}`;
+  await sql`UPDATE publications SET selected = true, score = 10 WHERE article_id = ${id("tie-selected")}`;
+  await sql`UPDATE publications SET selected = true, seat = false, score = 5 WHERE article_id = ${id("tie-unseated")}`;
+  const result = await loadPool(query("wq"));
+  assert.deepEqual(result.items.map(item => item.id), ["tie-selected", "tie-score", "tie-unseated", "tie-new"].map(id));
+  assert.equal(result.total, 4);
 });

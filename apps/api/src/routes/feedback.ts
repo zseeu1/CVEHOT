@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { FeedbackRejected, submitFeedback, type FeedbackInput } from "@aihot/backend/operations/feedback";
-import { sendProblem } from "../http/respond.ts";
+import { clientIp, sendProblem } from "../http/respond.ts";
 
 type FeedbackBody = Pick<FeedbackInput, "content" | "email" | "pageUrl" | "screenshot">;
 
@@ -31,8 +31,7 @@ export function registerFeedback(app: FastifyInstance) {
   app.post("/api/site/feedback", { bodyLimit: 12 * 1024 * 1024 }, async (req, reply) => {
     try {
       const body = await readForm(req.body, String(req.headers["content-type"] ?? ""));
-      const ip = String(req.headers["x-real-ip"] ?? req.ip ?? "");
-      const result = await submitFeedback({ ...body, ip, userAgent: String(req.headers["user-agent"] ?? "") });
+      const result = await submitFeedback({ ...body, ip: clientIp(req), userAgent: String(req.headers["user-agent"] ?? "") });
       return reply.header("Cache-Control", "no-store").code(201).send(result);
     } catch (error) {
       if (error instanceof FeedbackRejected) return sendProblem(req, reply, { status: error.status, code: error.code, detail: error.message, retryAfter: error.retryAfter });

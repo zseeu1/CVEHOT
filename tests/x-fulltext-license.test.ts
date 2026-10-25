@@ -56,9 +56,11 @@ async function fixture(options: {
   };
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, site_fulltext, syndicate_fulltext, icon_url, next_fetch_at)
     VALUES (${source}, '许可测试来源', ${kind}, 'T1', ${options.mode ?? "editorial"}, ${options.full ?? false}, ${options.syndicate ?? true}, 'https://example.org/source.png', '2100-01-01')`;
+  // Found, published and released a minute ago: a rolling window that ends at the reader's clock holds it.
+  const minuteAgo = new Date(Date.now() - 60_000);
   const { articleId: id } = await upsertMaterial({ sourceId: source, url, title: `Original title ${key}`, language: "en",
     bodyText: options.bodyStatus === "none" ? null : main, bodyHtml: options.bodyStatus === "none" ? null : `<p>${main}</p>`,
-    bodyStatus: options.bodyStatus ?? "ok", xPost, via: "fetch", publishedAt: new Date() });
+    bodyStatus: options.bodyStatus ?? "ok", xPost, via: "fetch", publishedAt: minuteAgo, discoveredAt: minuteAgo });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, reason_zh, tags, score, selected)
     VALUES (${id}, 1, 'rule', 'pass', 'advisory', ${`标题-${key}`}, ${summary}, '推荐理由', ${[T, key]}, 90, true)`;
   if (options.translation !== "missing") {
@@ -71,7 +73,7 @@ async function fixture(options: {
   const fact = `fact-${key}`;
   const [savedFact] = await sql<{ id: number }[]>`INSERT INTO facts (public_id, story_id, title) VALUES (${fact}, ${savedStory!.id}, '许可测试进展') RETURNING id`;
   await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${savedFact!.id}, ${id}, 'report')`;
-  await publishArticle(id, { releasedAt: new Date(Date.now() - 60_000) });
+  await publishArticle(id, { releasedAt: minuteAgo });
   const [publication] = await sql`SELECT body_mode, eligible FROM publications WHERE article_id = ${id}`;
   assert.equal(publication!.body_mode, options.full && (!options.bodyStatus || options.bodyStatus === "ok") ? "full" : "summary");
   assert.equal(publication!.eligible, (!!summary || options.shape === "quote-only") && (!options.mode || options.mode === "editorial"));

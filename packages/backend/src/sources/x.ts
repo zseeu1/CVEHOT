@@ -5,6 +5,7 @@ import { ProviderRejectedError } from "../providers/receipts.ts";
 import type { XPostData } from "../content/materials.ts";
 import { sha256 } from "../lib/ids.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
+import { xHandle } from "./account.ts";
 
 function avatar(url: string | undefined): string | null {
   // Larger avatar than the default 48px thumbnail.
@@ -185,13 +186,16 @@ export async function readXSearch(base: string, opts: { lastId: string | null; b
   return { tweets, receiptIds: [...receiptIds], lastId: maxId, backlog, pages, truncated, backlogPages, dropped };
 }
 
-/** One account's own search (its first fetch, a query of its own, or a manual run from the admin). */
-export async function fetchXSearch(source: SourceRow): Promise<XFetch> {
+/**
+ * One account's own search (its first fetch, a query of its own, or a manual run from the admin), from
+ * its watermark or from an earlier post (`since`).
+ */
+export async function fetchXSearch(source: SourceRow, since?: string): Promise<XFetch> {
   const handle = selfThreadHandle(source);
   const base = handle ? `from:${handle} (-filter:replies OR filter:self_threads)` : String(source.config.query ?? "");
   if (!base) throw new FetchError("query missing");
   const { tweets, ...read } = await readXSearch(base, {
-    lastId: source.cursor?.lastTweetId ?? null,
+    lastId: since ?? source.cursor?.lastTweetId ?? null,
     backlog: Array.isArray(source.cursor?.xBacklog) ? source.cursor.xBacklog : [],
     subject: `source:${source.id}`,
     type: source.config.searchType ?? "Latest",
@@ -202,7 +206,7 @@ export async function fetchXSearch(source: SourceRow): Promise<XFetch> {
 // Shards: plain account queries read together
 
 /** A query that can share a search: exactly "from:handle -filter:replies", newest first. */
-const SHARDABLE = /^from:([A-Za-z0-9_]{1,15}) -filter:replies$/i;
+const SHARDABLE = /^from:[A-Za-z0-9_]{1,15} -filter:replies$/i;
 /** The same test in SQL, for the schedulers. */
 export const SHARDABLE_SQL = "^from:[A-Za-z0-9_]{1,15} -filter:replies$";
 /** SocialData refuses queries over 512 characters; the since_id watermark takes about 30 of them. */
@@ -212,13 +216,13 @@ const SHARD_MAX_ACCOUNTS = 24;
 /** The account a source reads, when it can share a search: a plain query and a watermark already set. */
 export function shardHandle(s: Pick<SourceRow, "kind" | "config" | "cursor">): string | null {
   if (s.kind !== "x_search" || (s.config.searchType ?? "Latest") !== "Latest" || !s.cursor?.lastTweetId) return null;
-  return SHARDABLE.exec(String(s.config.query ?? ""))?.[1] ?? null;
+  return SHARDABLE.test(String(s.config.query ?? "")) ? xHandle(s.config) : null;
 }
 
 /** Verified publisher identity permits its own announcement thread, not conversations with others. */
 export function selfThreadHandle(s: Pick<SourceRow, "config">): string | null {
   if (s.config.publisherRole !== "organization" && s.config.publisherRole !== "person") return null;
-  return SHARDABLE.exec(String(s.config.query ?? ""))?.[1] ?? null;
+  return SHARDABLE.test(String(s.config.query ?? "")) ? xHandle(s.config) : null;
 }
 
 export function shardQuery(handles: string[], selfThreads: string[] = []): string {

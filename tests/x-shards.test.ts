@@ -1,13 +1,15 @@
 // X accounts share searches: one request reads a shard of accounts, each post goes to
 // the source whose handle wrote it, every account keeps its own fetch run and watermark, and a failed
-// search moves no watermark.
+// search moves no watermark. The account a source reads is its query's, whatever its name shows.
 import { Reply, stub, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
+import { upsertMaterial } from "@aihot/backend/content/materials";
 import { collectSource, collectXShard, scheduleDueSources } from "@aihot/backend/sources/collect";
+import { refreshSourceIcons } from "@aihot/backend/sources/icons";
 import { planXShards, shardQuery, selfThreadHandle, fetchXSearch } from "@aihot/backend/sources/x";
 
 const T = tag();
@@ -94,7 +96,8 @@ test("one search reads a shard; each account gets its own posts, run and waterma
   for (const q of asked) assert.match(q, new RegExp(`^\\(from:${HANDLES[0]} OR from:${HANDLES[1]} OR from:${HANDLES[2]}\\) -filter:replies since_id:${WATERMARK}$`));
   const stored = await sql<{ source_id: string; n: number }[]>`SELECT source_id, count(*)::int AS n FROM articles WHERE source_id IN ${sql(IDS)} GROUP BY 1`;
   assert.deepEqual(Object.fromEntries(stored.map((r) => [r.source_id, r.n])), { [IDS[0]!]: 3, [IDS[1]!]: 1 });
-  for (const id of IDS) assert.equal((await cursorOf(id)).lastTweetId, String(BASE + 104n), "every account is covered up to the newest post read");
+  assert.deepEqual(await Promise.all(IDS.map(async (id) => (await cursorOf(id)).lastTweetId)), [String(BASE + 104n), String(BASE + 103n), String(WATERMARK)],
+    "each account's watermark moves to its own newest post; a quiet account's stays");
   const runs = await sql<{ source_id: string; status: string; found_count: number; detail: { shard: string; accounts: number } }[]>`
     SELECT DISTINCT ON (source_id) source_id, status, found_count, detail FROM fetch_runs WHERE source_id IN ${sql(IDS)} ORDER BY source_id, id DESC`;
   assert.deepEqual(runs.map((r) => [r.status, r.found_count, r.detail.accounts]), [["ok", 3, 3], ["ok", 1, 3], ["ok", 0, 3]]);
@@ -110,8 +113,9 @@ test("a page failing after the first keeps what was read and goes on from there 
   const first = await collectXShard(`editorial:test-${T}`, IDS);
   assert.equal(first.status, "ok", "the accounts are not failed for a later page");
   assert.equal(first.found, 2, "the first page is kept");
+  assert.equal((await cursorOf(IDS[0]!)).lastTweetId, String(BASE + 104n), "the watermark moves to the account's newest post read");
   const cursor = (await sql<{ cursor: { lastTweetId: string; xBacklog?: unknown[] } }[]>`SELECT cursor FROM sources WHERE id = ${IDS[2]!}`)[0]!.cursor;
-  assert.equal(cursor.lastTweetId, String(BASE + 104n), "the watermark moves to the newest post read");
+  assert.equal(cursor.lastTweetId, String(WATERMARK - 1n), "a quiet account keeps its own");
   assert.equal(cursor.xBacklog?.length, 1, "the rest is kept to read");
   const partial = await sql`SELECT status FROM receipts WHERE subject = ${`x-shard:editorial:test-${T}`}
     AND request->>'query' LIKE ${`%since_id:${WATERMARK - 1n}`} ORDER BY id`;
@@ -131,6 +135,27 @@ test("a quiet account's old newest post does not drag the shard's search back: i
   const since = BigInt(/since_id:(\d+)/.exec(queries[before]!)![1]!);
   const expected = (BigInt(checked - 10 * 60_000 - 1288834974657) << 22n);
   assert.equal(since, expected > WATERMARK - 3n ? expected : WATERMARK - 3n, "bounded by the last checks, not by the quiet account's post");
+});
+
+test("a post in the ten minutes before a check leaves the next search those ten minutes back", async () => {
+  // A real post id from two minutes ago, by the first account only.
+  const recent = { id: BigInt(Date.now() - 2 * 60_000 - 1288834974657) << 22n, handle: HANDLES[0]! };
+  POSTS.unshift(recent);
+  const pair = [IDS[0]!, IDS[2]!];
+  const key = `editorial:late-${T}`;
+  try {
+    await sql`UPDATE sources SET cursor = (cursor - 'lastOkAt' - 'xBacklog') || ${sql.json({ lastTweetId: String(WATERMARK - 40n) })} WHERE id IN ${sql(pair)}`;
+    assert.equal((await collectXShard(key, pair)).status, "ok");
+    assert.equal((await cursorOf(IDS[0]!)).lastTweetId, String(recent.id), "the poster moves to its own newest post");
+    const quiet = (await cursorOf(IDS[2]!)) as { lastTweetId: string; lastOkAt: string };
+    assert.equal(quiet.lastTweetId, String(WATERMARK - 40n), "the quiet account keeps its watermark");
+    const before = queries.length;
+    await collectXShard(key, pair);
+    const since = BigInt(/since_id:(\d+)/.exec(queries[before]!)![1]!);
+    assert.equal(since, BigInt(Date.parse(quiet.lastOkAt) - 10 * 60_000 - 1288834974657) << 22n, "posts reaching the search late are still read");
+  } finally {
+    POSTS.splice(POSTS.indexOf(recent), 1);
+  }
 });
 
 test("a failed search fails every account of the shard and moves no watermark", async () => {
@@ -222,4 +247,22 @@ test("paid search receipts and coverage commit together for single sources and s
     const completed = await sql`SELECT status, completed_at FROM receipts WHERE subject = ${subject} AND request->>'query' LIKE ${`%since_id:${watermark}`}`;
     assert.ok(completed.every((r) => r.status === "completed" && r.completed_at !== null));
   }
+});
+
+// Names show the account in many ways ("X：某人（@handle）" ends in a full-width bracket), so an account
+// found by its name's last "(@handle)" never took its posts' avatar.
+test("an account takes the avatar on its own latest post, whatever its name shows", async () => {
+  const handle = `sd${T}`;
+  const id = `test-xs-${handle}`;
+  await sql`INSERT INTO sources (id, name, kind, config, next_fetch_at)
+            VALUES (${id}, ${`X：某人（@${handle}）`}, 'x_search', ${sql.json({ query: `from:${handle} -filter:replies` })}, '2100-01-01')`;
+  const post = (n: bigint, author: string, avatarUrl: string, minutesAgo: number) => upsertMaterial({
+    sourceId: id, url: `https://x.com/${author}/status/${BASE + n}`, title: `Post ${n}`, via: "fetch", discoveredAt: new Date(Date.now() - minutesAgo * 60_000),
+    xPost: { tweetId: String(BASE + n), authorName: author, handle: author, avatarUrl, text: `Post ${n} ${T}` },
+  });
+  await post(901n, handle.toUpperCase(), "https://pbs.twimg.com/profile_images/1/own.jpg", 2);
+  await post(902n, `other${T}`, "https://pbs.twimg.com/profile_images/2/someone-else.jpg", 1);
+  await refreshSourceIcons();
+  const [source] = await sql<{ icon_url: string | null }[]>`SELECT icon_url FROM sources WHERE id = ${id}`;
+  assert.equal(source!.icon_url, "https://pbs.twimg.com/profile_images/1/own.jpg", "its own post's avatar, not a later post by someone else");
 });

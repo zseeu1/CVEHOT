@@ -59,9 +59,9 @@ services:
   worker:
     <<: *backend
     command: ["node", "apps/worker/src/main.ts"]
-    # On stop the worker lets a paid call in flight finish (STOP_TIMEOUT_MS, 195 s); Docker's default
-    # 10 s would kill it mid-call and leave "outcome unknown" receipts that are paid for again.
-    stop_grace_period: 210s
+    # Let the worker drain backups and paid calls (STOP_TIMEOUT_MS, 470 s), then close its database.
+    # Docker sends SIGTERM to the worker first; after this window it kills the remaining processes.
+    stop_grace_period: 515s
     depends_on:
       setup:
         condition: service_completed_successfully

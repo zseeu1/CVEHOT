@@ -1,22 +1,28 @@
+import { describePublicationTime } from "../sources/dates.ts";
 // analyzeArticle: the judging and writing steps, each with its own prompt from the industry pack
 // (industry/prompts/):
+// Without material (only a title) or a displayable original post, the item waits for a new material
+// revision before any step.
 //   1. prefilter: does the material belong to this industry at all (wide recall). Only BLOCK stops an
-//      item; a BLOCK given while material is missing counts as UNKNOWN. Without material or a
-//      displayable original post, UNKNOWN waits for a new material revision before later steps;
+//      item; a BLOCK given while material is missing, or on an original post without text, counts as
+//      UNKNOWN. Without material or a displayable original post, UNKNOWN waits for a new material
+//      revision before later steps;
 //   2. score: one score against the source tier's threshold (industry/selection.ts) decides 精选;
 //   3. structure: category, tags, subjects and the current news fact, beside scoring;
 //   4. writing, once the structure is in: the Chinese title, summary and reason by the content
-//      understanding for selected and near-selected items, by the cheaper title/summary prompts for the rest.
+//      understanding for selected and near-selected items, by the cheaper title/summary prompts for the rest;
+//      copy that uses a word the site keeps from readers (industry/wording.ts) goes back once to change only those.
 // Material with only a title or a feed summary has its article page fetched before it is judged.
 import { z } from "zod";
 import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { SELECTION } from "@aihot/industry/selection";
+import { ITEM_COPY } from "@aihot/site";
 import { sql } from "../db.ts";
-import { chatJson, ModelOutputError, type ContentPart } from "../providers/llm.ts";
-import { completeReceipt, ProviderRejectedError, ReceiptUnknownError } from "../providers/receipts.ts";
+import { chatJson, MODELS, type ContentPart } from "../providers/llm.ts";
+import { completeReceipt, failedReceiptId, failureKind } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
-import { modelFor, modelSupportsVision } from "./models.ts";
+import { modelFor, modelRoute, modelSupportsVision } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
 import { pageFetchable } from "../content/extract.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
@@ -29,6 +35,7 @@ import { CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, norma
 import { attentionScore, prefilterLabel, prefilterQuestions, scoreQuestions } from "./jev.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { originalPostCopy } from "../content/posts.ts";
+import { wordingProblems } from "./wording.ts";
 
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
@@ -38,6 +45,7 @@ export const PROMPT_VERSIONS = {
   understand: promptVersion("understand"),
   summarize: promptVersion("summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
   structure: promptVersion("structure"),
+  wording: promptVersion("mend-wording"),
 } as const;
 /** Every step's prompt, as stored on each judgement. */
 export const SELECTION_PROMPT_VERSION = [PROMPT_VERSIONS.prefilter, PROMPT_VERSIONS.score].join("+");
@@ -56,14 +64,8 @@ export function tierThreshold(tier: string): number | null {
 /** Unselected items above this mean are written like selected ones. */
 export const UNDERSTAND_FLOOR = SELECTION.understandFloor;
 
-/**
- * Call parameters per score model. The GLM scorer runs at temperature 1 with high reasoning (the model
- * registry adds top_p and thinking) and up to 180 s per call.
- */
-const SCORE_CALL: Record<string, { temperature: number; maxTokens: number; timeoutMs: number }> = {
-  "glm-5.3-flash-selection": { temperature: 1, maxTokens: 65_536, timeoutMs: 180_000 },
-};
-const scoreCall = (model: string) => SCORE_CALL[model] ?? { temperature: 0.2, maxTokens: 1024, timeoutMs: 120_000 };
+/** Call parameters of the score step, unless the model sets its own (the site's preset, `scoreCall`). */
+const scoreCall = (model: string) => MODELS[model]?.scoreCall ?? { temperature: 0.2, maxTokens: 1024, timeoutMs: 120_000 };
 
 /** The score prompt: the industry's taste (industry/prompts/selection-score.md). */
 export const SCORE_SYSTEM = promptText("selection-score");
@@ -101,7 +103,7 @@ export function buildScoreInput(a: AnalyzeInputArticle): string {
   const at = a.publishedAt;
   return [
     "请按系统规则评估以下单篇材料所代表的事件。只输出 attentionScore。",
-    `【发布时间（北京时间）】\n${at ? scoreInputTime(at) : "未知（收录时间不代表发布时间）"}`,
+    `【发布时间（北京时间）】\n${at ? a.publicationTime === undefined || a.publicationTime?.includes("T") ? scoreInputTime(at) : describePublicationTime(at, a.publicationTime) : "未知（收录时间不代表发布时间）"}`,
     `【标题】\n${a.title.trim()}`,
     `【完整正文】\n${scoreBody(a)}`,
   ].join("\n\n");
@@ -205,7 +207,8 @@ export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: Ana
 }
 
 export interface AnalysisRun {
-  prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean };
+  /** Absent when there is nothing to judge yet: only a title, and no displayable original post. */
+  prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean } | null;
   /**
    * The score and the tier threshold it is held against; absent when the material is not scored.
    * `refused`: the model's content filter declined it, so it is not selected.
@@ -227,7 +230,7 @@ export interface AnalysisRun {
   structure: (ReturnType<typeof normalizeStructure> & { model: string; receiptId: number; reused: boolean }) | null;
 }
 
-const isContentFilter = (error: unknown) => error instanceof ProviderRejectedError && !error.retryable && /contentFilter|"1301"/.test(error.message);
+const isContentFilter = (error: unknown) => failureKind(error) === "refused" && /contentFilter|"1301"/.test((error as Error).message);
 
 /** Only a title or a feed summary, and a page to fetch: the article is judged on the page. */
 export function waitsForPage(a: AnalyzeInputArticle): boolean {
@@ -236,19 +239,14 @@ export function waitsForPage(a: AnalyzeInputArticle): boolean {
 
 type StepOpts = { attemptTag?: string; scoreModel?: string };
 type ReceiptObserver = (receiptId: number) => void;
-export class AnalysisInterruptedError extends Error {}
 
-const observableReceiptId = (error: unknown): number | null =>
-  error instanceof ModelOutputError || error instanceof ReceiptUnknownError ? error.receiptId : null;
-
-function checkAnalysisRunning() {
-  if (shutdownSignal.signal.aborted) throw new AnalysisInterruptedError("worker shutting down between analysis stages");
-}
+/** A stopping worker finishes the stage it is in, never starts the next. */
+const checkAnalysisRunning = () => shutdownSignal.signal.throwIfAborted();
 
 const subjectOf = (a: AnalyzeInputArticle) => `article:${a.id}@${a.revision}`;
 const tagged = (attemptTag: string | undefined, step: string) => [attemptTag, step].filter(Boolean).join(":") || undefined;
 
-async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<AnalysisRun["prefilter"]> {
+async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["prefilter"]>> {
   const model = await modelFor("prefilter");
   checkAnalysisRunning();
   const res = await chatJson({
@@ -270,7 +268,7 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Ana
       toData: (answers) => ({ label: prefilterLabel(answers), reason: "" }),
     },
   });
-  // A BLOCK without material to back it counts as UNKNOWN (which goes on).
+  // A BLOCK without text to back it (an original post that is only media or a link) counts as UNKNOWN (which goes on).
   const label = res.data.label === "BLOCK" && missingEvidence(a) ? "UNKNOWN" : res.data.label;
   return { label, reason: res.data.reason, model: res.model, receiptId: res.receiptId, reused: res.reused };
 }
@@ -280,13 +278,13 @@ export async function runSelectionPrefilter(
   a: AnalyzeInputArticle,
   opts: StepOpts = {},
   onReceipt?: ReceiptObserver,
-): Promise<AnalysisRun["prefilter"]> {
+): Promise<NonNullable<AnalysisRun["prefilter"]>> {
   try {
     const result = await runPrefilter(a, opts);
     onReceipt?.(result.receiptId);
     return result;
   } catch (error) {
-    const receiptId = observableReceiptId(error);
+    const receiptId = failedReceiptId(error);
     if (receiptId !== null) onReceipt?.(receiptId);
     throw error;
   }
@@ -320,7 +318,7 @@ async function runScores(
     onReceipt?.(res.receiptId);
     return { model, threshold, values: [res.data.attentionScore], receiptIds: [res.receiptId], reused: res.reused };
   } catch (error) {
-    const receiptId = observableReceiptId(error);
+    const receiptId = failedReceiptId(error);
     if (receiptId !== null) onReceipt?.(receiptId);
     // The model's content filter declines the material (Zhipu 1301): not scored, so not selected.
     if (isContentFilter(error)) return { model, threshold, values: [], receiptIds: [], reused: false, refused: true };
@@ -376,7 +374,7 @@ export async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts = {})
   } catch (error) {
     if (isContentFilter(error)) return null;
     // The model refused the image (download, format): the text is written without it.
-    if (!image || !(error instanceof ProviderRejectedError) || error.retryable) throw error;
+    if (!image || failureKind(error) !== "refused") throw error;
     try {
       res = await call(null);
     } catch (retryError) {
@@ -392,6 +390,52 @@ export async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts = {})
   };
 }
 
+export const MEND_SYSTEM = promptText("mend-wording", { reasonLabel: ITEM_COPY.reasonLabel });
+const MendSchema = z.object({ titleZh: z.string().trim().min(1), summaryZh: z.string().trim().min(1), reasonZh: z.string().trim().nullable().catch(null) });
+
+/**
+ * Written copy that uses a word the site keeps from its readers (industry/wording.ts) goes back once, those words
+ * named, to change only them: a site's writing prompts can ask the same, but a model keeps drifting back to the
+ * words it uses most. The mended copy keeps the
+ * identity guard and is used only when it leaves fewer such words and the same numbers.
+ */
+async function mendWording(a: AnalyzeInputArticle, w: NonNullable<AnalysisRun["writing"]>, opts: StepOpts): Promise<NonNullable<AnalysisRun["writing"]>> {
+  // A copy missing its title or summary waits for a whole one (normalizeAnalysis): nothing to mend, and no text to
+  // let a model without the material fill in.
+  if ((w.kind !== "understand" && w.kind !== "summarize") || !w.titleZh || !w.summaryZh) return w;
+  const problems = wordingProblems(w);
+  if (!problems.length) return w;
+  const t = translateInputOf(a);
+  checkAnalysisRunning();
+  let res;
+  try {
+    res = await chatJson({
+      model: await modelFor("wording"), purpose: "mend_wording", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.wording, system: MEND_SYSTEM,
+      user: [
+        `来源：${t.sourceName ?? "（未注明）"}`, `原题：${t.title}`,
+        `中文稿：\n${JSON.stringify({ titleZh: w.titleZh, summaryZh: w.summaryZh, reasonZh: w.reasonZh })}`,
+        `问题：\n${problems.map((p) => `- ${p}`).join("\n")}`,
+      ].join("\n\n"),
+      schema: MendSchema, temperature: 0.1, maxTokens: 2048, attemptTag: tagged(opts.attemptTag, "wording"),
+    });
+  } catch (error) {
+    // An answer that is not the copy asked for, or a refusal the same request would meet again (each provider words
+    // its own), leaves the first copy: a mend that cannot be had must not hold the item back. Its receipt stays failed
+    // (seen on the runs page, and asked again the next time the item is analysed); a busy provider is tried again later.
+    const kind = failureKind(error);
+    if (kind === "unusable" || kind === "refused") return w;
+    throw error;
+  }
+  const copy = finalizeCopy(t, { titleZh: res.data.titleZh, summaryZh: res.data.summaryZh });
+  const mended = { titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: w.reasonZh === null ? null : res.data.reasonZh || w.reasonZh };
+  const paid = { receiptIds: [...w.receiptIds, res.receiptId], reused: w.reused && res.reused };
+  // A guard that emptied the title or summary (a company the input does not name), a number changed or dropped, or
+  // no fewer such words: the first copy stands.
+  const numbers = (c: { titleZh: string; summaryZh: string; reasonZh: string | null }) => (`${c.titleZh} ${c.summaryZh} ${c.reasonZh ?? ""}`.match(/\d+(?:[.,]\d+)*/g) ?? []).sort().join(" ");
+  if (!mended.titleZh || !mended.summaryZh || numbers(mended) !== numbers(w) || wordingProblems(mended).length >= problems.length) return { ...w, ...paid };
+  return { ...w, ...mended, identityGuard: copy.identityGuard ?? w.identityGuard, ...paid };
+}
+
 /** The title/summary prompts (articles, long and short posts). */
 async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["writing"]>> {
   const t = translateInputOf(a);
@@ -402,10 +446,10 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   // A short post already in Chinese is its own copy, and too little text is not written up from a title.
   if (short && !needsShortTweetTranslation(main)) return { kind: "verbatim", model: null, titleZh: main, summaryZh: main, ...plain };
   if (!short && t.text.trim().length < 20) return { kind: "none", model: null, titleZh: looksZh(t.title) ? t.title : "", summaryZh: "", ...plain };
-  const model = await modelFor("summarize");
+  const route = await modelRoute("summarize");
   checkAnalysisRunning();
   const res = await chatJson({
-    model,
+    ...route,
     purpose: "summarize_article",
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.summarize,
@@ -428,25 +472,49 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   return { kind: "summarize", model: res.model, titleZh: copy.titleZh, summaryZh: copy.summaryZh, reasonZh: null, identityGuard: copy.identityGuard, receiptIds: [res.receiptId], reused: res.reused };
 }
 
+/** Only a title, and no displayable original post: nothing to judge until a material revision arrives. */
+export function awaitsMaterial(a: AnalyzeInputArticle): boolean {
+  return missingEvidence(a) && !originalPostCopy(a.xPost, a.url);
+}
+
+/** The score itself; null when the scoring was refused or did not complete. */
+function scoredValue(scores: AnalysisRun["scores"]): number | null {
+  return scores && !scores.refused && scores.values.length === 1 ? scores.values[0]! : null;
+}
+
+/** The score shown: floored (it never decides a half point on its own). */
+export function shownScore(scores: AnalysisRun["scores"]): number | null {
+  const value = scoredValue(scores);
+  return value === null ? null : Math.floor(value);
+}
+
+/**
+ * The selection rule on the score: it reaches the source tier's threshold (or `threshold`, when an
+ * evaluation sweeps it). The item must also pass relevance (normalizeAnalysis).
+ */
+export function scoresSelect(scores: AnalysisRun["scores"], threshold = scores?.threshold ?? null): boolean {
+  const value = scoredValue(scores);
+  return value !== null && threshold !== null && value >= threshold;
+}
+
 /** Runs the steps on the material as it is (or reuses their receipts) without writing business results. */
 export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): Promise<AnalysisRun> {
   checkAnalysisRunning();
+  // Missing article text waits for a later revision, before any paid step; displayable original posts keep their judgement.
+  if (awaitsMaterial(a)) return { prefilter: null, scores: null, writing: null, structure: null };
   const prefilter = await runSelectionPrefilter(a, opts);
-  // Missing article text waits for a later revision; displayable original posts keep their judgement.
   if (prefilter.label === "BLOCK") return { prefilter, scores: null, writing: null, structure: null };
   const original = originalPostCopy(a.xPost, a.url);
-  if (missingEvidence(a) && !original) return { prefilter, scores: null, writing: null, structure: null };
   // The structure step needs nothing from the scores: it runs beside them.
   const structure = runStructure(a, opts).then((value) => ({ value }), (error: unknown) => ({ error }));
   try {
     const scores = await runSelectionScores(a, opts);
-    const value = scores && !scores.refused && scores.values.length === 1 ? scores.values[0]! : null;
-    const near = value !== null && (value >= scores!.threshold || value > UNDERSTAND_FLOOR);
+    const near = scoresSelect(scores) || (scoredValue(scores) ?? -Infinity) > UNDERSTAND_FLOOR;
     const s = await structure;
     if ("error" in s) throw s.error;
     const writing: NonNullable<AnalysisRun["writing"]> = original
       ? { kind: "verbatim", model: null, titleZh: original.title, summaryZh: original.summary ?? "", reasonZh: null, receiptIds: [], reused: true }
-      : (near ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts));
+      : await mendWording(a, (near ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts)), opts);
     return { prefilter, scores, writing, structure: s.value };
   } finally {
     // A score/writing error or deploy must not let the job finish while a paid structure request
@@ -457,17 +525,16 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
 
 /** One judgement from the steps: the selection rule, the reader-facing copy and the structure. */
 export function normalizeAnalysis(run: AnalysisRun) {
-  const label = run.prefilter.label;
+  const label = run.prefilter?.label;
   const titleZh = collapseWhitespace(run.writing?.titleZh ?? "");
   const summaryZh = (run.writing?.summaryZh ?? "").trim();
   // Original posts can consist entirely of media. Model-written copy still needs a title and summary.
   const relevance = label === "BLOCK" ? "block" : !run.writing || !titleZh || (!summaryZh && run.writing.kind !== "verbatim") ? "unknown" : "pass";
   // Selected when the score reaches the tier threshold; the score is floored for display.
   const values = run.scores && !run.scores.refused ? run.scores.values : null;
-  const value = values?.length === 1 ? values[0]! : null;
-  const score = value === null ? null : Math.floor(value);
+  const score = shownScore(run.scores);
   const threshold = run.scores?.threshold ?? null;
-  const selected = relevance === "pass" && value !== null && threshold !== null && value >= threshold;
+  const selected = relevance === "pass" && scoresSelect(run.scores);
   const subjects = run.structure?.subjects ?? [];
   const tags = [...(run.structure?.tags ?? [])];
   for (const s of subjects) {
@@ -515,11 +582,12 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   const run = await runAnalysis(input, opts);
   const out = normalizeAnalysis(run);
   const receiptIds = [
-    run.prefilter.receiptId, ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []), ...(run.structure ? [run.structure.receiptId] : []),
+    ...(run.prefilter ? [run.prefilter.receiptId] : []), ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []),
+    ...(run.structure ? [run.structure.receiptId] : []),
   ];
   const w = run.writing;
   const detail = {
-    prefilter: { label: run.prefilter.label, reason: run.prefilter.reason },
+    prefilter: run.prefilter && { label: run.prefilter.label, reason: run.prefilter.reason },
     scores: out.scores, scoreModel: out.scoreModel, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
@@ -531,7 +599,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO analyses (article_id, input_revision, origin, model, prompt_version, receipt_ids, relevance, category, tags,
         subjects, title_zh, summary_zh, reason_zh, score, selected, output)
-      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter.model}, ${ANALYZE_PROMPT_VERSION}, ${receiptIds},
+      VALUES (${articleId}, ${input.revision}, 'model', ${w?.model ?? run.prefilter?.model ?? null}, ${ANALYZE_PROMPT_VERSION}, ${receiptIds},
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.reasonZh},
         ${out.score}, ${out.selected}, ${tx.json(detail as never)})
       RETURNING id`;
@@ -541,6 +609,6 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     }
     return { analysisId: row!.id, stale };
   });
-  const reused = run.prefilter.reused && (run.scores?.reused ?? true) && (w?.reused ?? true) && (run.structure?.reused ?? true);
+  const reused = (run.prefilter?.reused ?? true) && (run.scores?.reused ?? true) && (w?.reused ?? true) && (run.structure?.reused ?? true);
   return { analysisId: committed.analysisId, stale: committed.stale, output: out, receiptIds, reused };
 }

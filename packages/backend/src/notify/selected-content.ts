@@ -2,7 +2,9 @@
 import { sql } from "../db.ts";
 import { itemUrl } from "../publication/links.ts";
 import { publicSourceName } from "../publication/rules.ts";
-import { CATEGORY_LABELS, type CategoryKey } from "@aihot/contracts/taxonomy";
+import { type CategoryKey } from "@aihot/contracts/taxonomy";
+import { beijingDay } from "@aihot/contracts/time";
+import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { ITEM_COPY, SITE } from "@aihot/site";
 
 const MAX_AGE_MS = 12 * 3600_000;
@@ -28,22 +30,33 @@ interface Row {
   silent: boolean;
 }
 
+/** The original's publication date, so a launch introduced again weeks later does not read as today's. */
+const published = (at: Date) => `${beijingDay(at)}发布`;
+
+/** Model-written words go into card markdown: its markup characters are shown as written. */
+const literal = (text: string) => text.replace(/[&<>*_~`[\]]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+const link = (label: string, url: string, type: string) => ({
+  tag: "column", width: "auto",
+  elements: [{ tag: "button", text: { tag: "plain_text", content: label }, type, behaviors: [{ type: "open_url", default_url: url }] }],
+});
+
+// Card JSON 2.0: a header title has one fixed size, so the title is the first body line, a size above the summary.
 function card(r: Row) {
-  const category = r.category ? CATEGORY_LABELS[r.category] : null;
-  const lines = [r.summary, r.reason ? `**${ITEM_COPY.reasonLabel}**：${r.reason}` : null, `来源：${publicSourceName(r.source_name)}`].filter(Boolean);
+  const category = CATEGORIES.find((c) => c.key === r.category);
+  const tag = category ? ` <text_tag color='${category.tagColor}'>${category.label}</text_tag>` : "";
   return {
-    header: { title: { tag: "plain_text", content: r.title }, template: "turquoise" },
-    elements: [
-      ...(category ? [{ tag: "note", elements: [{ tag: "plain_text", content: category }] }] : []),
-      { tag: "div", text: { tag: "lark_md", content: lines.join("\n\n") } },
-      {
-        tag: "action",
-        actions: [
-          { tag: "button", text: { tag: "plain_text", content: `${SITE.name} 查看` }, url: itemUrl(r.article_id), type: "primary" },
-          { tag: "button", text: { tag: "plain_text", content: "原文" }, url: r.url, type: "default" },
-        ],
-      },
-    ],
+    schema: "2.0",
+    config: { style: { text_size: { title: { default: "heading-3", pc: "heading-3", mobile: "heading-4" } } } },
+    body: {
+      elements: [
+        { tag: "markdown", text_size: "title", content: `**${literal(r.title)}**${tag}` },
+        { tag: "markdown", text_size: "notation", content: `<font color='grey'>${literal(publicSourceName(r.source_name))} · ${published(r.published_at!)}</font>` },
+        { tag: "markdown", content: literal(r.summary ?? "") },
+        ...(r.reason ? [{ tag: "markdown", text_size: "notation", content: `<font color='grey'>**${ITEM_COPY.reasonLabel}**　${literal(r.reason)}</font>` }] : []),
+        { tag: "column_set", horizontal_spacing: "8px", columns: [link(`在 ${SITE.name} 阅读`, itemUrl(r.article_id), "primary"), link("原文", r.url, "default")] },
+      ],
+    },
   };
 }
 

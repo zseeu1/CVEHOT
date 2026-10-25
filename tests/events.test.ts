@@ -195,11 +195,11 @@ test("a development attaches to the story's earliest fact that still holds repor
 });
 
 
-/** A story whose only fact holds one report with the given text. */
-async function storyWithRoot(text: string, suffix: string) {
+/** A story whose only fact holds one report with the given text, published at `publishedAt`. */
+async function storyWithRoot(text: string, suffix: string, publishedAt = new Date()) {
   const [story] = await sql<{ id: number; public_id: string }[]>`INSERT INTO stories (public_id, title, first_report_at, latest_at) VALUES (${randomUUID()}, ${text}, now(), now()) RETURNING id, public_id`;
   const [fact] = await sql<{ id: number }[]>`INSERT INTO facts (public_id, story_id, title) VALUES (${`fs-${suffix}-${T}`}, ${story!.id}, ${text}) RETURNING id`;
-  const article = await report(suffix, text, text);
+  const article = await report(suffix, text, text, publishedAt);
   await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${fact!.id}, ${article}, 'report')`;
   return { storyId: Number(story!.id), publicId: String(story!.public_id), factId: Number(fact!.id), articleId: article };
 }
@@ -389,8 +389,9 @@ test("two stories a report ties together merge when both models see one story in
   hold = gate();
   hold.open();
   const text = randomText();
-  const older = await storyWithRoot(`${text}甲`, "older");
-  const newer = await storyWithRoot(`${text}乙`, "newer");
+  // Published a minute apart: which story is older does not depend on the VM's clock never stepping back.
+  const older = await storyWithRoot(`${text}甲`, "older", new Date(Date.now() - 120_000));
+  const newer = await storyWithRoot(`${text}乙`, "newer", new Date(Date.now() - 60_000));
   relation = "SAME_STORY";
   answerAll = true;
   try {
@@ -441,8 +442,8 @@ test("two stories stay apart when their roots are different events, whatever the
   hold = gate();
   hold.open();
   const text = randomText();
-  const one = await storyWithRoot(`${text}甲`, "one");
-  const two = await storyWithRoot(`${text}乙`, "two");
+  const one = await storyWithRoot(`${text}甲`, "one", new Date(Date.now() - 120_000));
+  const two = await storyWithRoot(`${text}乙`, "two", new Date(Date.now() - 60_000));
   relation = "SAME_STORY";
   pairRelation = "UNRELATED";
   answerAll = true;

@@ -164,7 +164,7 @@ export async function candidates(start: Date, end: Date): Promise<Candidate[]> {
  * authoritative) in the reports' current public wording, ranked by how the dailies treated it (lead,
  * highlight, the days it was carried), its coverage and its best score. Reports withdrawn since drop out.
  */
-export async function periodEntries(startDate: string, endDate: string): Promise<{ entries: Candidate[]; issues: number }> {
+export async function periodEntries(startDate: string, endDate: string): Promise<{ entries: Candidate[]; issues: number; hasEntries: boolean }> {
   const issues = await sql<{ key: string; content: Record<string, any> }[]>`
     SELECT key, content FROM reports WHERE kind = 'daily' AND key >= ${startDate} AND key <= ${endDate} ORDER BY key`;
   const carried = issues.flatMap((issue) => (issue.content.sections ?? []).flatMap((s: any) => (s.items ?? []).filter((it: any) => it.itemId).map((it: any) => ({
@@ -174,7 +174,7 @@ export async function periodEntries(startDate: string, endDate: string): Promise
     lead: issue.content.leadItemId === it.itemId,
     highlight: (issue.content.highlights ?? []).includes(it.itemId),
   }))));
-  if (carried.length === 0) return { entries: [], issues: issues.length };
+  if (carried.length === 0) return { entries: [], issues: issues.length, hasEntries: false };
   const rows = await sql<ReportRow[]>`
     SELECT ${REPORT_FIELDS}
     FROM publications p JOIN sources s ON s.id = p.source_id
@@ -194,7 +194,7 @@ export async function periodEntries(startDate: string, endDate: string): Promise
     return { candidate: { ...reportEntry(main), category: main.category, factKey: factKeyOf(main) }, rank };
   });
   ranked.sort((a, b) => b.rank - a.rank || a.candidate.itemId.localeCompare(b.candidate.itemId));
-  return { entries: ranked.map((r) => r.candidate), issues: issues.length };
+  return { entries: ranked.map((r) => r.candidate), issues: issues.length, hasEntries: true };
 }
 
 /** Every report an issue cites: its entries, what is listed under them, its flashes. */

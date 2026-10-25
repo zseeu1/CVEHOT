@@ -23,10 +23,4 @@ export type Candidate = Omit<MaterialInput, "sourceId" | "via"> & {
   categories?: string[];
 };
 
-export class FetchError extends Error {
-  readonly status: number | null;
-  constructor(message: string, status: number | null = null) {
-    super(message);
-    this.status = status;
-  }
-}
+export class FetchError extends Error {}

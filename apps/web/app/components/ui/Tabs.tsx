@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router";
 import { IntentLink } from "./IntentLink";
 import { useEntrance } from "../../lib/hydration";
+import { reducedMotion } from "../../lib/motion";
 
 /** Where each switch's thumb sat when it last left, relative to its track. */
 const thumbs = new Map<string, { left: number; width: number; at: number }>();
@@ -24,8 +25,7 @@ function Thumb({ id }: { id: string }) {
     if (!el) return;
     const now = placeOf(el);
     const prev = thumbs.get(id);
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    if (entrance && !reduce && prev && now.at - prev.at < 1000 && (prev.left !== now.left || prev.width !== now.width) && el.animate) {
+    if (entrance && !reducedMotion() && prev && now.at - prev.at < 1000 && (prev.left !== now.left || prev.width !== now.width) && el.animate) {
       el.animate(
         [{ transform: `translateX(${prev.left - now.left}px)`, width: `${prev.width}px` }, { transform: "translateX(0)", width: `${now.width}px` }],
         { duration: 300, easing: "cubic-bezier(0.25, 1, 0.5, 1)" },
@@ -43,7 +43,8 @@ export interface TabItem {
   label: ReactNode;
   /** Link target; tabs without one call onSelect. */
   to?: string;
-  prefetch?: "intent";
+  /** Prefetch the page when the reader presses the tab (IntentLink). */
+  prefetchOnPress?: boolean;
   replace?: boolean;
   /** Start the page it opens at the top (another page rather than another view of this one). */
   resetScroll?: boolean;
@@ -83,7 +84,7 @@ export function PillTabs({
         data-pill-track=""
         aria-label={label}
         role={links ? undefined : "tablist"}
-        className={`${fill ? "grid w-full" : "inline-flex w-max"} gap-0.5 rounded-full bg-bg-sunk p-0.5 lg:p-[3px] ring-1 ring-inset ring-line-soft dark:bg-bg-muted/60`}
+        className={`${fill ? "grid w-full" : "inline-flex w-max"} gap-0.5 rounded-full bg-well p-0.5 lg:p-[3px] ring-1 ring-inset ring-line-soft`}
         style={fill ? { gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` } : undefined}
       >
         {items.map((t) => {
@@ -98,7 +99,7 @@ export function PillTabs({
             </>
           );
           const cls = `relative inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-full font-medium outline-offset-1 transition-colors duration-150 active:scale-[0.98] ${SIZES[size]} ${on ? "text-ink" : "text-ink-3 hover:text-ink"}`;
-          const TabLink = t.prefetch === "intent" ? IntentLink : Link;
+          const TabLink = t.prefetchOnPress ? IntentLink : Link;
           return t.to ? (
             <TabLink key={t.key} to={t.to} replace={t.replace} preventScrollReset={!t.resetScroll} aria-current={on ? "page" : undefined} className={cls}>
               {inner}

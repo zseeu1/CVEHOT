@@ -243,7 +243,10 @@ async function encodeImage(body: Buffer, upstreamType: string, mode: string, vec
   // accepting them; a missing MIME type must not turn HTML/error pages into successful images.
   const binary = suppliedType === "application/octet-stream" || suppliedType === "binary/octet-stream" || suppliedType === "";
   if (!suppliedType.startsWith("image/") && !ico && !binary) throw new Error("upstream is not an image");
-  let type = ico ? "image/png" : suppliedType;
+  // Some favicon endpoints label a standalone PNG as an icon. Recognize its bytes before
+  // requiring the ICO container; the image decoder still verifies the complete payload.
+  const pngIcon = /icon$/.test(suppliedType) && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  let type = ico || pngIcon ? "image/png" : suppliedType;
   if (/icon$/.test(type) && !ico) throw new Error("unreadable icon");
   const avatar = mode === "avatar" || mode.startsWith("avatar-");
   const width = IMAGE_WIDTHS[mode as keyof typeof IMAGE_WIDTHS] ?? 1600;

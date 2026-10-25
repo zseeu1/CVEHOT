@@ -11,15 +11,22 @@ import { extractArticleBody } from "@aihot/backend/content/extract";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 import { queueProcessing, registerExtractionJobs } from "@aihot/backend/jobs/content";
+import { rerun } from "@aihot/backend/admin/content";
 
 const sourceId = `extract-consistency-${tag()}`;
 const body = "This is the original article, with enough substantive text to extract its paragraphs. ".repeat(12);
+let presentationHtml: string | null = null;
+let rssHtml = "";
 let hold: { entered: ReturnType<typeof gate<void>>; release: ReturnType<typeof gate<void>>; count: number; empty: boolean; failed?: boolean };
 const page = http.createServer(async (_req, res) => {
+  if (_req.url === "/feed") {
+    res.writeHead(200, { "content-type": "application/rss+xml" });
+    return res.end(`<rss version="2.0"><channel><title>Feed</title><item><title>RSS original</title><link>${base}/rss-original</link><content:encoded><![CDATA[${rssHtml}]]></content:encoded></item></channel></rss>`);
+  }
   if (--hold.count === 0) hold.entered.open();
   await hold.release.promise;
   res.writeHead(200, { "content-type": "text/html" });
-  res.end(hold.empty ? "<html><body>Empty</body></html>" : `<html><head><title>Original</title></head><body><article><h1>Original</h1><p>${body}</p></article></body></html>`);
+  res.end(hold.empty ? "<html><body>Empty</body></html>" : `<html><head><title>Original</title></head><body><article><h1>Original</h1>${presentationHtml ?? `<p>${body}</p>`}</article></body></html>`);
 });
 await new Promise<void>(resolve => page.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
@@ -40,7 +47,7 @@ before(async () => {
   await sql`UPDATE budgets SET per_minute=0,per_hour=0,per_day=0 WHERE service='jina'`;
 });
 after(async () => { page.close(); await socialdata.close(); await stopBoss(); await closeDb(); });
-const reset = (count = 1, empty = false) => { hold = { entered: gate(), release: gate(), count, empty }; };
+const reset = (count = 1, empty = false) => { presentationHtml = null; hold = { entered: gate(), release: gate(), count, empty }; };
 const state = async (id: string) => ({ ...(await sql`SELECT title,body_text,body_status,revision,content_hash FROM articles WHERE id=${id}`)[0] });
 
 for (const x of [false, true]) for (const empty of [false, true]) {
@@ -78,6 +85,61 @@ test("overlapping page extractions and an unchanged admin retry create only one 
   assert.equal(await extractArticleBody(articleId), "ok");
   assert.deepEqual(await state(articleId), saved);
   assert.equal((await sql`SELECT 1 FROM article_revisions WHERE article_id=${articleId}`).length, 2);
+});
+
+test("an audited presentation refresh previews and applies only the reviewed layout without reprocessing", async () => {
+  reset(); hold.release.open();
+  const { articleId } = await upsertMaterial({ sourceId, url: `${base}/${tag()}`, title: "Original", via: "fetch" });
+  await extractArticleBody(articleId);
+  await sql`UPDATE articles SET processing_state='analyzed',grouping_status='complete',media='[{"kind":"image","url":"https://example.com/publisher-cover.png"}]' WHERE id=${articleId}`;
+  const before = await state(articleId);
+  const [counts] = await sql`SELECT (SELECT count(*)::int FROM receipts) receipts,(SELECT count(*)::int FROM article_revisions WHERE article_id=${articleId}) revisions`;
+  presentationHtml = `<p>${body}</p><figure><a href="https://example.com/chart"><img src="https://example.com/chart.png" alt="chart"></a></figure>`;
+  const preview = await rerun(articleId, "presentation", "preview-layout", "test", { preview: true });
+  assert.ok(preview && "version" in preview);
+  assert.equal(preview.ready, true);
+  assert.deepEqual(preview.images, { before: 0, after: 1 });
+  assert.doesNotMatch((await sql`SELECT body_html FROM articles WHERE id=${articleId}`)[0]!.body_html, /chart.png/);
+  const applied = await rerun(articleId, "presentation", "apply-layout", "test", { version: preview.version });
+  assert.ok(applied && "applied" in applied && applied.applied);
+  assert.match((await sql`SELECT body_html FROM articles WHERE id=${articleId}`)[0]!.body_html, /chart.png/);
+  assert.equal((await sql`SELECT media->0->>'url' AS cover FROM articles WHERE id=${articleId}`)[0]!.cover, 'https://example.com/publisher-cover.png', "a page's body pictures must not replace the publisher's cover");
+  assert.deepEqual(await state(articleId), before);
+  assert.deepEqual({ ...(await sql`SELECT (SELECT count(*)::int FROM receipts) receipts,(SELECT count(*)::int FROM article_revisions WHERE article_id=${articleId}) revisions`)[0] }, { ...counts });
+  assert.deepEqual(await rerun(articleId, "presentation", "apply-layout", "test", { version: preview.version }), applied, "the audited request is idempotent");
+  assert.equal((await sql`SELECT 1 FROM audit_log WHERE subject=${`content:${articleId}`} AND action='content.rerun.presentation'`).length, 1);
+  await sql`INSERT INTO translations(article_id,lang,revision,body_html,body_text,complete,origin)
+    VALUES (${articleId},'zh',${before.revision},'<p>原有的<a href="https://example.com/legacy">中文</a>译文。</p>','原有的中文译文。',true,'model')`;
+  const unchanged = await rerun(articleId, "presentation", "preview-unchanged", "test", { preview: true });
+  assert.equal(unchanged?.changed, false);
+  assert.equal(unchanged?.ready, true, "unchanged original HTML does not require reusing mismatched historical translation structure");
+  presentationHtml = `<p><a href="https://example.com/new">This</a>${body.slice(4)}</p>`;
+  const unsafe = await rerun(articleId, "presentation", "preview-links", "test", { preview: true });
+  assert.equal(unsafe?.ready, false);
+  assert.equal(unsafe?.translation, "blocked");
+  assert.match(unsafe?.reason ?? "", /正常重翻/);
+  presentationHtml = `<p>${body} The actual model price has changed.</p>`;
+  const semantic = await rerun(articleId, "presentation", "preview-wording", "test", { preview: true });
+  assert.ok(semantic && "ready" in semantic && !semantic.ready);
+  assert.match(semantic.reason ?? "", /文字/);
+  await assert.rejects(rerun(articleId, "presentation", "apply-wording", "test", { version: preview.version }), /预览|变化|文字/);
+});
+
+test("an audited RSS presentation refresh uses the source body without substituting the web-page wording", async () => {
+  reset(); hold.release.open();
+  const rssSource = `${sourceId}-rss`;
+  await sql`INSERT INTO sources(id,name,kind,config) VALUES (${rssSource},'RSS presentation','rss',${sql.json({ feedUrl: `${base}/feed` })})`;
+  const text = "This is the RSS edition of the article with its own subscriber wording. ".repeat(8).trim();
+  const { articleId } = await upsertMaterial({ sourceId: rssSource, url: `${base}/rss-original`, title: "RSS original", via: "fetch", bodyText: text, bodyHtml: `<p>${text}</p>`, bodyStatus: 'ok' });
+  rssHtml = `<p>${text}</p><figure><img src="https://example.com/rss-chart.png"></figure>`;
+  const preview = await rerun(articleId, "presentation", "preview-rss-layout", "test", { preview: true });
+  assert.equal(preview?.ready, true, "the page has different wording, but the feed still has the original text");
+  assert.deepEqual(preview!.images, { before: 0, after: 1 });
+  await rerun(articleId, "presentation", "apply-rss-layout", "test", { version: preview!.version });
+  const [stored] = await sql`SELECT body_html,body_text,revision FROM articles WHERE id=${articleId}`;
+  assert.equal(stored!.body_text, text);
+  assert.equal(stored!.revision, 1);
+  assert.match(stored!.body_html, /rss-chart/);
 });
 
 // The worker's error path is also a write: a late provider error must not add retry state to a

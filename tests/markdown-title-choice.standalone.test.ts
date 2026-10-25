@@ -19,3 +19,11 @@ test("the first clean headline stays stable and a lone call to action can still 
   assert.equal(read(["A clean actual headline", "Another title for the same story", "Read more"])[0]!.title, "A clean actual headline");
   assert.equal(read(["Read more"])[0]!.title, "Read more");
 });
+
+test("parentheses in card image URLs cannot enter the headline or make it change with an asset deployment", () => {
+  const headline = "Hallo, Deutschland! Mistral Opens German Hub in Munich";
+  const card = (deployment: string) => `[![Image 5](https://publisher.example/_astro/Linkedin_Mistral02%20(1)_3Uubi.webp?dpl=${deployment}) ![Image 6](https://publisher.example/_astro/Linkedin_Mistral02%20(1)_3Uubi.webp?dpl=${deployment}) Company ## ${headline} September 28, 2026 By Mistral](https://publisher.example/blog/new-release)`;
+  const expected = [{ url: "https://publisher.example/blog/new-release", title: `Company ${headline} September 28, 2026 By Mistral` }];
+  for (const deployment of ["first", "second"]) assert.deepEqual(fromMarkdown(card(deployment), "https://publisher.example", source), expected);
+  assert.deepEqual(fromMarkdown(`[![Image](https://publisher.example/a_(b_(c)).webp)](https://publisher.example/blog/image-only)\n${card("third")}`, "https://publisher.example", source), expected);
+});

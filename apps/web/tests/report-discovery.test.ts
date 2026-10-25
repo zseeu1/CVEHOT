@@ -1,20 +1,13 @@
 // Production SSR with a local health stub. Failure case: machine entry points for weekly and monthly
 // reports exist but cannot be found from the access page.
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
 import * as cheerio from 'cheerio';
 import { MCP_TOOL_NAMES } from '@aihot/contracts/mcp';
-import { startWebServer, type WebServer } from './web-server.ts';
+import { fakeApi, startWebServer, type WebServer } from './web-server.ts';
 
 let web: WebServer;
-const api = createServer((req, res) => {
-  res.setHeader('Content-Type', 'application/json');
-  if (req.url === '/api/health') return res.end(JSON.stringify({ ok: true }));
-  if (req.url === '/api/site/meta') return res.end(JSON.stringify({ changelogVersion: '2026-01-01T00:00' }));
-  res.statusCode = 404;
-  res.end(JSON.stringify({ code: 'not_found' }));
-});
+const api = fakeApi((url) => (url.pathname === '/api/health' ? { ok: true } : undefined));
 before(async () => { web = await startWebServer(api); });
 after(() => web.stop());
 
