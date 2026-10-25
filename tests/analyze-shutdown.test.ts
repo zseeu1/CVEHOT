@@ -103,17 +103,17 @@ test("SIGTERM during the final paid writing call still commits the complete anal
   await Promise.race([Promise.all([running.ready, active.writingAsked!.promise]), running.done.then(() => assert.fail("worker exited before writing"))]);
   running.child.kill("SIGTERM"); await running.stopping;
   active.writingAnswer!.open(); await running.done;
-  assert.deepEqual(active.calls.slice().sort(), ["prefilter", "score", "score", "structure", "understand"]);
+  assert.deepEqual(active.calls.slice().sort(), ["prefilter", "score", "structure", "understand"]);
   assert.equal((await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]!.state, "completed");
   assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${articleId}`)[0]!.processing_state, "analyzed");
   const [analysis] = await sql`SELECT selected,score,receipt_ids FROM analyses WHERE article_id=${articleId}`;
-  assert.equal(analysis!.selected, true); assert.equal(analysis!.score, SELECTING_SCORE); assert.equal(analysis!.receipt_ids.length, 5);
+  assert.equal(analysis!.selected, true); assert.equal(analysis!.score, SELECTING_SCORE); assert.equal(analysis!.receipt_ids.length, 4);
   assert.deepEqual({ ...(await sql`SELECT selected, selection_candidate FROM publications WHERE article_id=${articleId}`)[0] },
     { selected: false, selection_candidate: true }, "saved analysis nominates a candidate while news identity is pending");
-  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${`article:${articleId}@1`} AND status='completed'`).length, 5);
+  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${`article:${articleId}@1`} AND status='completed'`).length, 4);
 });
 
-for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "failed" : "successful"} first score drains slower structure and leaves a retryable job`, async () => {
+for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "failed" : "successful"} score drains slower structure and leaves a retryable job`, async () => {
   active = { calls: [], scoreAsked: gate(), structureAsked: gate(), scoreAnswer: gate(), structureAnswer: gate(), failScore };
   const queue = `test.analyze-stop-${T}-${failScore}`;
   const boss = await getBoss();
@@ -132,7 +132,7 @@ for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "faile
   await until(async () => !!(await sql`SELECT 1 FROM receipts WHERE subject=${`article:${articleId}@1`} AND purpose='score_article' AND status IN ('received','failed')`)[0], "score receipt");
   assert.equal(first.child.exitCode, null, "the process stays alive while structure owns a paid response");
   assert.equal((await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]!.state, "active");
-  assert.deepEqual(active.calls.filter(s => s !== "prefilter").sort(), ["score", "structure"], "no second score or writing starts during shutdown");
+  assert.deepEqual(active.calls.filter(s => s !== "prefilter").sort(), ["score", "structure"], "no writing starts during shutdown");
   active.structureAnswer.open(); await first.done;
   const [article] = await sql`SELECT processing_state,processing_attempts,processing_error FROM articles WHERE id=${articleId}`;
   assert.deepEqual({ ...article }, { processing_state: "new", processing_attempts: 2, processing_error: "prior temporary failure" });
@@ -146,9 +146,9 @@ for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "faile
   restarted.child.kill("SIGTERM"); await restarted.done;
   assert.equal(active.calls.filter(s => s === "prefilter").length, 1);
   assert.equal(active.calls.filter(s => s === "structure").length, 1, "the slow structure answer was saved and reused");
-  assert.equal(active.calls.filter(s => s === "score").length, failScore ? 3 : 2, "two ordered successful scores, only a rejected request repeats");
+  assert.equal(active.calls.filter(s => s === "score").length, failScore ? 2 : 1, "one successful score, only a rejected request repeats");
   assert.equal(active.calls.filter(s => s === "understand").length, 1);
   const [result] = await sql`SELECT selected,score,receipt_ids FROM analyses WHERE article_id=${articleId}`;
-  assert.equal(result!.selected, true); assert.equal(result!.score, SELECTING_SCORE); assert.equal(result!.receipt_ids.length, 5);
+  assert.equal(result!.selected, true); assert.equal(result!.score, SELECTING_SCORE); assert.equal(result!.receipt_ids.length, 4);
   assert.equal((await sql`SELECT processing_attempts FROM articles WHERE id=${articleId}`)[0]!.processing_attempts, 0);
 });

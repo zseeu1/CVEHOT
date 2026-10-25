@@ -42,7 +42,7 @@ after(async () => {
   await closeDb();
 });
 
-test("one model runs the prefilter, both scores, the writing and the structure", async () => {
+test("one model runs the prefilter, the score, the writing and the structure", async () => {
   const { articleId } = await upsertMaterial({
     sourceId: SOURCE, url: `https://example.com/${T}`, title: `A product launch ${T}`, bodyText: `A company launched a product with pricing and availability. ${T} `.repeat(6),
     bodyStatus: "ok", via: "fetch", publishedAt: new Date(),
@@ -50,7 +50,7 @@ test("one model runs the prefilter, both scores, the writing and the structure",
   const res = await analyzeArticle(articleId);
   assert.equal(res!.output!.selected, true);
   assert.equal(res!.output!.titleZh, "一个模型的标题");
-  assert.deepEqual(seen.map((r) => r.step).sort(), ["prefilter", "score", "score", "structure", "understand"]);
+  assert.deepEqual(seen.map((r) => r.step).sort(), ["prefilter", "score", "structure", "understand"]);
   assert.ok(seen.every((r) => r.model === "one-model"), "every request names the configured model");
   const services = await sql<{ service: string }[]>`SELECT DISTINCT service FROM receipts WHERE subject LIKE ${`article:${articleId}%`}`;
   assert.deepEqual(services.map((s) => s.service), ["llm"]);

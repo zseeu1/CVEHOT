@@ -75,13 +75,13 @@ test("the score standard is asked as typed questions and weighted here", async (
 
   const res = await analyzeArticle(articleId);
 
-  // One call per independent score, each asking the content type and the five axes against one state.
-  assert.equal(asked.length, 2, "two independent score calls");
+  // One call asking the content type and the five axes against the state.
+  assert.equal(asked.length, 1, "one score call");
   assert.deepEqual(Object.keys(asked[0]!.questions).sort(), ["act", "content_type", "cred", "nov", "reson", "sig"]);
   assert.deepEqual(Object.keys(asked[0]!.state).sort(), ["body", "published_at", "title"]);
 
   // Every axis answered 4 of 5 levels, which is 8 of 10 points; the exploited_vuln row weights them
-  // 3+1+2+2+2 = 10, so the weighted total is 80 — and both calls agree, so the mean is the same.
+  // 3+1+2+2+2 = 10, so the weighted total is 80.
   assert.equal(res!.output!.score, 80);
   assert.equal(res!.output!.selected, true, "80 clears the T1 threshold of 58");
 
@@ -91,7 +91,7 @@ test("the score standard is asked as typed questions and weighted here", async (
   // The gateway reports what the run cost; the receipt keeps it as the actual amount, not an estimate.
   const attempts = await sql<{ cost: string | null; cost_basis: string | null }[]>`
     SELECT a.cost, a.cost_basis FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id WHERE r.service = 'typesafe'`;
-  assert.equal(attempts.length, 2);
+  assert.equal(attempts.length, 1);
   assert.ok(attempts.every((a) => a.cost_basis === "actual"), "cost comes from the response, not a price table");
   assert.ok(attempts.every((a) => Number(a.cost) > 0));
 });

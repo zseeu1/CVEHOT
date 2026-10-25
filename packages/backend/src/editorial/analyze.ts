@@ -3,7 +3,7 @@
 //   1. prefilter: does the material belong to this industry at all (wide recall). Only BLOCK stops an
 //      item; a BLOCK given while material is missing counts as UNKNOWN. Without material or a
 //      displayable original post, UNKNOWN waits for a new material revision before later steps;
-//   2. score: two independent scores against the source tier's threshold (industry/selection.ts) decide 精选;
+//   2. score: one score against the source tier's threshold (industry/selection.ts) decides 精选;
 //   3. structure: category, tags, subjects and the current news fact, beside scoring;
 //   4. writing, once the structure is in: the Chinese title, summary and reason by the content
 //      understanding for selected and near-selected items, by the cheaper title/summary prompts for the rest.
@@ -45,12 +45,9 @@ export const ANALYZE_PROMPT_VERSION = Object.values(PROMPT_VERSIONS).join("+");
 
 // Scoring
 
-/** Independent score calls per article; their sum decides, their mean (floored) is shown. */
-export const SCORE_CALLS = 2;
-
 /**
- * The thresholds on the mean score, per source tier (industry/selection.ts): selected when
- * score1 + score2 >= 2 × threshold. Tiers without a threshold are not scored for 精选.
+ * The threshold on the score, per source tier (industry/selection.ts): selected when the score
+ * reaches it.
  */
 export function tierThreshold(tier: string): number | null {
   return SELECTION.thresholds[tier] ?? null;
@@ -210,8 +207,8 @@ export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: Ana
 export interface AnalysisRun {
   prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean };
   /**
-   * The independent score calls and the tier threshold they are held against; absent when the material
-   * is not scored. `refused`: the model's content filter declined it, so it is not selected.
+   * The score and the tier threshold it is held against; absent when the material is not scored.
+   * `refused`: the model's content filter declined it, so it is not selected.
    */
   scores: { model: string; threshold: number; values: number[]; receiptIds: number[]; reused: boolean; refused?: boolean } | null;
   /** The reader-facing copy: `understand` (selected, near-selected), `summarize`, `verbatim` (a Chinese short post), `none`. */
@@ -305,39 +302,30 @@ async function runScores(
   const call = scoreCall(model);
   const input = buildScoreInput(a);
   const state = scoreState(a);
-  const values: number[] = [];
-  const receiptIds: number[] = [];
-  let reused = true;
-  // One after the other: the second call reuses the provider's cached prompt.
-  for (let i = 0; i < SCORE_CALLS; i++) {
-    checkAnalysisRunning();
-    try {
-      const res = await chatJson({
-        model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score, system: SCORE_SYSTEM, user: input,
-        schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
-        // Each call is its own paid request; an explicit re-evaluation gets new ones.
-        attemptTag: tagged(opts.attemptTag, `score-${i + 1}`),
-        // On a System One model the standard is asked as six typed questions (the content type and
-        // the five axes) and weighted here, instead of being computed inside one answer.
-        systemOne: {
-          state,
-          questions: scoreQuestions(),
-          toData: (answers) => ({ attentionScore: attentionScore(answers) }),
-        },
-      });
-      onReceipt?.(res.receiptId);
-      values.push(res.data.attentionScore);
-      receiptIds.push(res.receiptId);
-      reused &&= res.reused;
-    } catch (error) {
-      const receiptId = observableReceiptId(error);
-      if (receiptId !== null) onReceipt?.(receiptId);
-      // The model's content filter declines the material (Zhipu 1301): not scored, so not selected.
-      if (isContentFilter(error)) return { model, threshold, values, receiptIds, reused: false, refused: true };
-      throw error;
-    }
+  checkAnalysisRunning();
+  try {
+    const res = await chatJson({
+      model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score, system: SCORE_SYSTEM, user: input,
+      schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
+      // Its own paid request; an explicit re-evaluation gets a new one.
+      attemptTag: tagged(opts.attemptTag, "score"),
+      // On a System One model the standard is asked as six typed questions (the content type and
+      // the five axes) and weighted here, instead of being computed inside one answer.
+      systemOne: {
+        state,
+        questions: scoreQuestions(),
+        toData: (answers) => ({ attentionScore: attentionScore(answers) }),
+      },
+    });
+    onReceipt?.(res.receiptId);
+    return { model, threshold, values: [res.data.attentionScore], receiptIds: [res.receiptId], reused: res.reused };
+  } catch (error) {
+    const receiptId = observableReceiptId(error);
+    if (receiptId !== null) onReceipt?.(receiptId);
+    // The model's content filter declines the material (Zhipu 1301): not scored, so not selected.
+    if (isContentFilter(error)) return { model, threshold, values: [], receiptIds: [], reused: false, refused: true };
+    throw error;
   }
-  return { model, threshold, values, receiptIds, reused };
 }
 
 /** The production score step; its threshold stays case-specific even when an evaluator shares model output. */
@@ -452,8 +440,8 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
   const structure = runStructure(a, opts).then((value) => ({ value }), (error: unknown) => ({ error }));
   try {
     const scores = await runSelectionScores(a, opts);
-    const sum = scores && !scores.refused && scores.values.length === SCORE_CALLS ? scores.values.reduce((total, v) => total + v, 0) : null;
-    const near = sum !== null && (sum >= scores!.threshold * SCORE_CALLS || sum > UNDERSTAND_FLOOR * SCORE_CALLS);
+    const value = scores && !scores.refused && scores.values.length === 1 ? scores.values[0]! : null;
+    const near = value !== null && (value >= scores!.threshold || value > UNDERSTAND_FLOOR);
     const s = await structure;
     if ("error" in s) throw s.error;
     const writing: NonNullable<AnalysisRun["writing"]> = original
@@ -474,13 +462,12 @@ export function normalizeAnalysis(run: AnalysisRun) {
   const summaryZh = (run.writing?.summaryZh ?? "").trim();
   // Original posts can consist entirely of media. Model-written copy still needs a title and summary.
   const relevance = label === "BLOCK" ? "block" : !run.writing || !titleZh || (!summaryZh && run.writing.kind !== "verbatim") ? "unknown" : "pass";
-  // Selected when the two scores add up to twice the tier threshold; the mean, floored, is the score
-  // shown (it never decides a half point on its own).
+  // Selected when the score reaches the tier threshold; the score is floored for display.
   const values = run.scores && !run.scores.refused ? run.scores.values : null;
-  const sum = values?.length === SCORE_CALLS ? values.reduce((total, v) => total + v, 0) : null;
-  const score = sum === null ? null : Math.floor(sum / SCORE_CALLS);
+  const value = values?.length === 1 ? values[0]! : null;
+  const score = value === null ? null : Math.floor(value);
   const threshold = run.scores?.threshold ?? null;
-  const selected = relevance === "pass" && sum !== null && threshold !== null && sum >= threshold * SCORE_CALLS;
+  const selected = relevance === "pass" && value !== null && threshold !== null && value >= threshold;
   const subjects = run.structure?.subjects ?? [];
   const tags = [...(run.structure?.tags ?? [])];
   for (const s of subjects) {

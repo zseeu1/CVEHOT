@@ -46,13 +46,13 @@ test("title-only articles wait for evidence regardless of the prefilter label", 
   });
 });
 
-test("real body, feed excerpt and quoted text still receive both scores and writing", async (t) => {
+test("real body, feed excerpt and quoted text still receive a score and writing", async (t) => {
   label = "PASS";
   for (const changes of [{ bodyText: "来源确认模型发布。" }, { excerpt: "来源确认模型发布。" },
     { xPost: { text: "支持", quoted: { text: "来源确认模型发布。" } } }]) await t.test(JSON.stringify(changes), async () => {
     steps.length = 0;
     const out = normalizeAnalysis(await runFresh(article(changes)));
-    assert.equal(steps.filter((step) => step === "score").length, 2);
+    assert.equal(steps.filter((step) => step === "score").length, 1);
     assert.ok(steps.includes("understand"));
     assert.equal(out.relevance, "pass");
     assert.equal(out.selected, true);
@@ -65,7 +65,7 @@ test("an empty or link-only original post keeps scoring and verbatim publication
     steps.length = 0;
     const run = await runFresh(article({ xPost: { text, media: [] } }));
     const out = normalizeAnalysis(run);
-    assert.equal(steps.filter((step) => step === "score").length, 2);
+    assert.equal(steps.filter((step) => step === "score").length, 1);
     assert.equal(steps.filter((step) => step === "understand" || step === "summarize").length, 0);
     assert.equal(run.writing?.kind, "verbatim");
     assert.equal(out.relevance, "pass");
@@ -80,7 +80,7 @@ test("a later material revision can be scored after the title-only revision wait
   assert.equal(normalizeAnalysis(await runFresh(input)).relevance, "unknown");
   steps.length = 0;
   const out = normalizeAnalysis(await runFresh({ ...input, revision: 2, bodyStatus: "ok", bodyText: "来源确认模型发布。" }));
-  assert.equal(steps.filter((step) => step === "score").length, 2);
+  assert.equal(steps.filter((step) => step === "score").length, 1);
   assert.equal(out.relevance, "pass");
   assert.equal(out.selected, true);
 });

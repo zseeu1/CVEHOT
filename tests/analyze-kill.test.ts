@@ -70,8 +70,8 @@ function worker(articleId: string) {
   return { child, done };
 }
 
-async function until(check: () => Promise<boolean>, label: string) {
-  const deadline = Date.now() + 15_000;
+async function until(check: () => Promise<boolean>, label: string, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
     if (Date.now() > deadline) assert.fail(`timeout waiting for ${label}`);
     await delay(20);
@@ -178,7 +178,10 @@ test("SIGKILL after responses are saved but before the business commit reuses al
   try {
     await locked.promise;
     const running = worker(articleId);
-    await until(async () => (await sql`SELECT 1 FROM receipts WHERE subject=${subject} AND status='received'`).length === 5, "all paid responses persisted");
+    // The worker imports the analysis chain before its first query, which alone takes tens of seconds
+    // on a cold module cache; the receipts below are what the crash boundary is about.
+    await until(async () => (await sql`SELECT 1 FROM receipts WHERE subject=${subject} AND status='received'`).length === 4,
+      "all paid responses persisted", 90_000);
     assert.equal((await sql`SELECT 1 FROM analyses WHERE article_id=${articleId}`).length, 0);
     assert.equal((await sql`SELECT 1 FROM publications WHERE article_id=${articleId}`).length, 0);
     await kill(running);
@@ -186,16 +189,16 @@ test("SIGKILL after responses are saved but before the business commit reuses al
     unlock.open();
     await transaction;
   }
-  assert.deepEqual(calls.slice().sort(), ["prefilter", "score", "score", "structure", "understand"]);
+  assert.deepEqual(calls.slice().sort(), ["prefilter", "score", "structure", "understand"]);
   const receivedIds = (await sql`SELECT id FROM receipts WHERE subject=${subject} ORDER BY id`).map((r) => String(r.id));
   assert.equal((await finish(articleId)).result?.state, "pass");
-  assert.equal(calls.length, 5, "restart sent no additional model requests");
+  assert.equal(calls.length, 4, "restart sent no additional model requests");
   const [analysis] = await sql`SELECT selected,score,receipt_ids FROM analyses WHERE article_id=${articleId}`;
   assert.equal(analysis?.selected, true);
   assert.equal(Number(analysis?.score), SELECTING_SCORE);
   assert.deepEqual(analysis!.receipt_ids.map(String).sort(), receivedIds.slice().sort());
-  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${subject} AND status='completed'`).length, 5);
-  assert.equal((await sql`SELECT 1 FROM receipt_attempts a JOIN receipts r ON r.id=a.receipt_id WHERE r.subject=${subject}`).length, 5);
+  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${subject} AND status='completed'`).length, 4);
+  assert.equal((await sql`SELECT 1 FROM receipt_attempts a JOIN receipts r ON r.id=a.receipt_id WHERE r.subject=${subject}`).length, 4);
   assert.deepEqual({ ...(await sql`SELECT selected, selection_candidate FROM publications WHERE article_id=${articleId}`)[0] },
     { selected: false, selection_candidate: true }, "saved analysis nominates a candidate while news identity is pending");
 });
